@@ -7,7 +7,7 @@ SKEL := $(TARGET).skel.h
 # Find the architecture-specific include path
 ARCH_INCLUDES := -I/usr/include/$(shell uname -m)-linux-gnu
 
-all: $(TARGET)
+compile: $(TARGET)
 
 # 1. Compile the BPF kernel code
 $(BPF_OBJ): $(BPF_C)
@@ -26,7 +26,11 @@ mount:
 	sudo mount -t debugfs debugfs /sys/kernel/debug
 	sudo mount -t tracefs nodev /sys/kernel/debug/tracing
 
+run:
+	sudo ./hello
+
 clean:
 	rm -f $(BPF_OBJ) $(SKEL) $(TARGET)
+	clear
 
 .PHONY: all clean
