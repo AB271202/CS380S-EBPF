@@ -7,7 +7,7 @@ SKEL := $(TARGET).skel.h
 # Find the architecture-specific include path
 ARCH_INCLUDES := -I/usr/include/$(shell uname -m)-linux-gnu
 
-compile: $(TARGET)
+compile: clean $(TARGET)
 
 # 1. Compile the BPF kernel code
 $(BPF_OBJ): $(BPF_C)

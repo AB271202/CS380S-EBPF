@@ -9,8 +9,6 @@ struct event {
     char comm[16];
 };
 
-
-
 // 2. Create a callback function to handle incoming events
 int handle_event(void *ctx, void *data, size_t data_sz) {
     const struct event *e = data;
