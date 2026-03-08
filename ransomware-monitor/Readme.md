@@ -36,3 +36,43 @@ A note on the naming convention
 The libbpf (Modern) Standard: In the Go/Rust/C world using modern libbpf (which we originally discussed), the .bpf.c extension is practically mandatory. It tells the compiler (Clang) and your Makefile, "Hey, compile this to the BPF bytecode target, not a standard x86/ARM executable."
 
 The BCC (Python) Quirk: BCC is a bit of a rebel. When you use Python with BCC, the Python script literally reads your C file as a giant raw text string and compiles it on the fly using its own internal LLVM engine. Because Python just sees it as text, it doesn't care if you name it monitor.c, monitor.bpf.c, or monitor.txt. Older BCC tutorials often just use .c.
+
+---
+
+## Quick Start & Verification
+
+### 1. Installation
+Install the necessary eBPF tools and Python dependencies:
+```bash
+make deps
+```
+
+### 2. Run the Monitor
+The monitor requires root privileges to load the eBPF program into the kernel:
+```bash
+make run
+```
+You should see output indicating that the BPF program is loading and the monitor has started.
+
+### 3. Verify Detection
+Open a separate terminal and simulate ransomware-like behavior to trigger alerts.
+
+**Detection by Extension:**
+Create a file with a suspicious extension:
+```bash
+touch test_file.locked
+```
+The monitor will output:
+`[!] ALERT: Suspicious file open '.locked' detected from touch (PID XXXX)`
+
+**Detection by Entropy (Encryption Simulation):**
+Run a command that writes high-entropy (random) data quickly:
+```bash
+dd if=/dev/urandom of=test_file_0.txt bs=1024 count=20
+```
+The monitor will detect the high frequency and high entropy of the writes:
+`[!!!] ALERT: Potential ransomware behavior from dd (PID XXXX)`
+`      High write frequency (10 in 1.0s) and high entropy (7.xx)`
+
+### 4. Results & Actions
+The `agent/detector.py` script is currently configured to **simulate** process termination. It will print an `[X] ACTION` message but will not actually kill the process unless you uncomment `os.kill(pid, 9)` in the `take_action` method.

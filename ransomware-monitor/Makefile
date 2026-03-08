@@ -1,4 +1,4 @@
-.PHONY: run clean
+.PHONY: run deps clean
 
 # eBPF programs must be loaded into the kernel as root.
 run:
