@@ -1,4 +1,5 @@
 from bcc import BPF
+import argparse
 import os
 import signal
 import sys
@@ -14,7 +15,17 @@ EVENT_TYPES = {
     3: "UNLINK"
 }
 
+DEFAULT_PERF_PAGE_CNT = 4096
+
 def main():
+    parser = argparse.ArgumentParser(description="Ransomware monitor")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print every traced filesystem event",
+    )
+    args = parser.parse_args()
+
     if os.geteuid() != 0:
         print("Error: This program must be run as root.")
         sys.exit(1)
@@ -35,15 +46,33 @@ def main():
 
     def print_event(cpu, data, size):
         event = b["events"].event(data)
-        event_type_str = EVENT_TYPES.get(event.type, "UNKNOWN")
-        # Debug: Print all events to see if they are coming through
-        print(f"Event: {event_type_str} PID={event.pid} Comm={event.comm.decode('utf-8', 'replace')} File={event.filename.decode('utf-8', 'replace')} Size={event.size}")
+        if args.verbose:
+            event_type_str = EVENT_TYPES.get(event.type, "UNKNOWN")
+            print(
+                f"Event: {event_type_str} PID={event.pid} "
+                f"Comm={event.comm.decode('utf-8', 'replace')} "
+                f"File={event.filename.decode('utf-8', 'replace')} "
+                f"Size={event.size}"
+            )
         detector.analyze_event(event)
 
-    # Increase page_cnt to 1024 or higher to avoid lost samples
-    b["events"].open_perf_buffer(print_event, page_cnt=2048)
+    lost_totals = {"count": 0}
+
+    def on_lost_event(cpu, count):
+        lost_totals["count"] += count
+        print(
+            f"[WARN] Lost {count} events on CPU {cpu} "
+            f"(total lost: {lost_totals['count']})."
+        )
+
+    page_cnt = int(os.getenv("PERF_PAGE_CNT", str(DEFAULT_PERF_PAGE_CNT)))
+    b["events"].open_perf_buffer(print_event, page_cnt=page_cnt, lost_cb=on_lost_event)
     
-    print("Ransomware monitor started. Press Ctrl+C to stop.")
+    mode = "verbose" if args.verbose else "alert-only"
+    print(
+        f"Ransomware monitor started ({mode} mode, perf pages={page_cnt}). "
+        "Press Ctrl+C to stop."
+    )
 
     def signal_handler(sig, frame):
         print("\nStopping monitor...")
