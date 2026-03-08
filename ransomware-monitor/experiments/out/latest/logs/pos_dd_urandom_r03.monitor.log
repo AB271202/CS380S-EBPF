@@ -1,0 +1,102 @@
+Loading BPF program from agent/../bpf/monitor.bpf.c...
+In file included from <built-in>:2:
+In file included from /virtual/include/bcc/bpf.h:12:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
+/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:41:9: warning: '__HAVE_BUILTIN_BSWAP32__' macro redefined [-Wmacro-redefined]
+#define __HAVE_BUILTIN_BSWAP32__
+        ^
+<command line>:4:9: note: previous definition is here
+#define __HAVE_BUILTIN_BSWAP32__ 1
+        ^
+In file included from <built-in>:2:
+In file included from /virtual/include/bcc/bpf.h:12:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
+/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:42:9: warning: '__HAVE_BUILTIN_BSWAP64__' macro redefined [-Wmacro-redefined]
+#define __HAVE_BUILTIN_BSWAP64__
+        ^
+<command line>:5:9: note: previous definition is here
+#define __HAVE_BUILTIN_BSWAP64__ 1
+        ^
+In file included from <built-in>:2:
+In file included from /virtual/include/bcc/bpf.h:12:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
+In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
+/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:43:9: warning: '__HAVE_BUILTIN_BSWAP16__' macro redefined [-Wmacro-redefined]
+#define __HAVE_BUILTIN_BSWAP16__
+        ^
+<command line>:3:9: note: previous definition is here
+#define __HAVE_BUILTIN_BSWAP16__ 1
+        ^
+3 warnings generated.
+Ransomware monitor started (alert-only mode, perf pages=4096). Press Ctrl+C to stop.
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (10 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.531687021418458, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.5951777, "write_count": 10}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (11 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.531459321668421, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.595501, "write_count": 11}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (12 in 1.0s) and high entropy (6.52)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.524759155210056, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.5957696, "write_count": 12}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (13 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.531857279082928, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.5960069, "write_count": 13}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (14 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.532213336985964, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.596242, "write_count": 14}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (15 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.526409765557393, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.5964923, "write_count": 15}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (16 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.528536175470559, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.5967324, "write_count": 16}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (17 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.533516687665156, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.597031, "write_count": 17}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (18 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.531752549847465, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.5972772, "write_count": 18}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (19 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.5335724094754255, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.597558, "write_count": 19}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+[!!!] ALERT: Potential ransomware behavior from dd (PID 15419)
+      High write frequency (20 in 1.0s) and high entropy (6.53)
+ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.532276777279523, "comm": "dd", "filename": "random.bin", "pid": 15419, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r03", "ts": 1772981032.5978065, "write_count": 20}
+[X] ACTION: Terminating process dd (PID 15419) due to High entropy + Frequency...
+      (Simulation) Sent SIGKILL to PID 15419
+
+Stopping monitor...

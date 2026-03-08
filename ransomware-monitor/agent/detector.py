@@ -1,5 +1,6 @@
 import math
 import collections
+import json
 import os
 import time
 
@@ -15,9 +16,42 @@ class RansomwareDetector:
         self.time_window = float(
             os.getenv("TIME_WINDOW_SEC", time_window if time_window is not None else 1.0)
         )
+        self.alert_json = os.getenv("ALERT_JSON", "0") == "1"
+        self.alert_json_prefix = os.getenv("ALERT_JSON_PREFIX", "ALERT_JSON")
+        self.run_id = os.getenv("RUN_ID", "")
         # process_stats: { pid: [(timestamp, entropy, filename), ...] }
         self.process_stats = collections.defaultdict(list)
         self.suspicious_extensions = {'.locked', '.crypto', '.encrypted', '.onion'}
+
+    def emit_alert(
+        self,
+        alert_type,
+        pid,
+        comm,
+        reason,
+        filename="",
+        extension="",
+        avg_entropy=None,
+        write_count=None,
+    ):
+        if not self.alert_json:
+            return
+        payload = {
+            "ts": time.time(),
+            "run_id": self.run_id,
+            "alert_type": alert_type,
+            "pid": int(pid),
+            "comm": comm,
+            "reason": reason,
+            "filename": filename,
+        }
+        if extension:
+            payload["extension"] = extension
+        if avg_entropy is not None:
+            payload["avg_entropy"] = float(avg_entropy)
+        if write_count is not None:
+            payload["write_count"] = int(write_count)
+        print(f"{self.alert_json_prefix}:{json.dumps(payload, sort_keys=True)}", flush=True)
 
     def calculate_entropy(self, data):
         if not data:
@@ -40,12 +74,28 @@ class RansomwareDetector:
              _, ext = os.path.splitext(filename)
              if ext in self.suspicious_extensions:
                 print(f"[!] ALERT: Suspicious file open '{ext}' detected from {comm} (PID {pid})")
+                self.emit_alert(
+                    alert_type="open_extension",
+                    pid=pid,
+                    comm=comm,
+                    reason="Suspicious extension",
+                    filename=filename,
+                    extension=ext,
+                )
                 self.take_action(pid, comm, "Suspicious extension")
 
         if event.type == 2: # RENAME
              _, ext = os.path.splitext(filename)
              if ext in self.suspicious_extensions:
                 print(f"[!] ALERT: Suspicious rename to '{ext}' detected from {comm} (PID {pid})")
+                self.emit_alert(
+                    alert_type="rename_extension",
+                    pid=pid,
+                    comm=comm,
+                    reason="Suspicious rename",
+                    filename=filename,
+                    extension=ext,
+                )
                 self.take_action(pid, comm, "Suspicious rename")
 
         if event.type == 1: # WRITE
@@ -67,6 +117,15 @@ class RansomwareDetector:
                 if avg_entropy >= self.threshold_entropy:
                     print(f"[!!!] ALERT: Potential ransomware behavior from {comm} (PID {pid})")
                     print(f"      High write frequency ({len(self.process_stats[pid])} in {self.time_window}s) and high entropy ({avg_entropy:.2f})")
+                    self.emit_alert(
+                        alert_type="write_entropy_frequency",
+                        pid=pid,
+                        comm=comm,
+                        reason="High entropy + Frequency",
+                        filename=filename,
+                        avg_entropy=avg_entropy,
+                        write_count=len(self.process_stats[pid]),
+                    )
                     self.take_action(pid, comm, "High entropy + Frequency")
 
     def take_action(self, pid, comm, reason):
