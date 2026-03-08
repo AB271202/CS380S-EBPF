@@ -1,8 +1,11 @@
-.PHONY: run deps clean
+.PHONY: run run-verbose deps clean
 
 # eBPF programs must be loaded into the kernel as root.
 run:
 	sudo python3 agent/main.py
+
+run-verbose:
+	sudo python3 agent/main.py --verbose
 
 # Install system-level BCC dependencies and Python requirements.
 # Note: This assumes a Debian/Ubuntu-based system.

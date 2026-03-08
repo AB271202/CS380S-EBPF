@@ -4,10 +4,17 @@ import os
 import time
 
 class RansomwareDetector:
-    def __init__(self, threshold_entropy=7.0, threshold_writes=10, time_window=1.0):
-        self.threshold_entropy = threshold_entropy
-        self.threshold_writes = threshold_writes
-        self.time_window = time_window
+    def __init__(self, threshold_entropy=None, threshold_writes=None, time_window=None):
+        # Tune defaults for 128-byte write samples from eBPF.
+        self.threshold_entropy = float(
+            os.getenv("THRESHOLD_ENTROPY", threshold_entropy if threshold_entropy is not None else 6.3)
+        )
+        self.threshold_writes = int(
+            os.getenv("THRESHOLD_WRITES", threshold_writes if threshold_writes is not None else 10)
+        )
+        self.time_window = float(
+            os.getenv("TIME_WINDOW_SEC", time_window if time_window is not None else 1.0)
+        )
         # process_stats: { pid: [(timestamp, entropy, filename), ...] }
         self.process_stats = collections.defaultdict(list)
         self.suspicious_extensions = {'.locked', '.crypto', '.encrypted', '.onion'}
@@ -42,7 +49,8 @@ class RansomwareDetector:
                 self.take_action(pid, comm, "Suspicious rename")
 
         if event.type == 1: # WRITE
-            entropy = self.calculate_entropy(event.buffer)
+            sample_len = min(int(event.size), len(event.buffer))
+            entropy = self.calculate_entropy(bytes(event.buffer[:sample_len]))
             self.process_stats[pid].append((now, entropy, filename))
 
             # Clean up old events outside the time window
