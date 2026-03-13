@@ -74,7 +74,8 @@ class RansomwareDetector:
         try:
             # os.kill(pid, 9) # Commented out for safety during initial testing
             print(f"      (Simulation) Sent SIGKILL to PID {pid}")
-        except ProcessLookupError:
-            pass
+        except ProcessLookupError as e:
+            print(f"      ProcessLookupError: {e}")
+
         except Exception as e:
             print(f"      Error terminating process: {e}")

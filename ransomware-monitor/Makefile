@@ -7,6 +7,10 @@ run:
 run-verbose:
 	sudo python3 agent/main.py --verbose
 
+mount: 
+	sudo mount -t debugfs debugfs /sys/kernel/debug
+	sudo mount -t tracefs nodev /sys/kernel/debug/tracing
+
 # Install system-level BCC dependencies and Python requirements.
 # Note: This assumes a Debian/Ubuntu-based system.
 deps:
