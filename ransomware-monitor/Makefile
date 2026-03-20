@@ -1,4 +1,4 @@
-.PHONY: run run-verbose deps exp-run exp-metrics exp-metrics-json clean
+.PHONY: run run-verbose deps exp-run exp-metrics exp-metrics-json exp-atomic-deps exp-run-atomic-t1486-official exp-metrics-atomic-official exp-run-tuned-both clean
 
 # eBPF programs must be loaded into the kernel as root.
 run:
@@ -28,6 +28,31 @@ exp-metrics:
 
 exp-metrics-json:
 	python3 experiments/metrics.py --results experiments/out/latest/results.csv --json-out experiments/out/latest/metrics.json
+
+exp-atomic-deps:
+	sudo apt-get update
+	sudo apt-get install -y gnupg p7zip-full ccrypt openssl
+
+exp-run-atomic-t1486-official:
+	sudo -E python3 experiments/run_experiments.py --scenarios experiments/scenarios_atomic_t1486_official.csv --output-dir experiments/out/atomic_t1486_official --repeats 3
+
+exp-metrics-atomic-official:
+	python3 experiments/metrics.py --results experiments/out/atomic_t1486_official/results.csv
+
+exp-run-tuned-both:
+	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios.csv --output-dir experiments/out/legacy_tuned --repeats 3
+	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios_atomic_t1486_official.csv --output-dir experiments/out/atomic_t1486_official_tuned --repeats 3
+	sudo -E python3 experiments/combine_results.py --output experiments/out/tuned_combined/results.csv experiments/out/legacy_tuned/results.csv experiments/out/atomic_t1486_official_tuned/results.csv
+	sudo chown -R $$(id -u):$$(id -g) experiments/out/tuned_combined
+	@echo ""
+	@echo "Legacy Metrics"
+	python3 experiments/metrics.py --results experiments/out/legacy_tuned/results.csv
+	@echo ""
+	@echo "Official Atomic Metrics"
+	python3 experiments/metrics.py --results experiments/out/atomic_t1486_official_tuned/results.csv
+	@echo ""
+	@echo "Combined Metrics"
+	python3 experiments/metrics.py --results experiments/out/tuned_combined/results.csv
 
 # Clean up Python cache files
 clean:
