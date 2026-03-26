@@ -17,7 +17,7 @@ class RansomwareDetector:
         )
         # process_stats: { pid: [(timestamp, entropy, filename), ...] }
         self.process_stats = collections.defaultdict(list)
-        self.suspicious_extensions = {'.locked', '.crypto', '.encrypted', '.onion'}
+        self.suspicious_extensions = {'.locked', '.crypto', '.encrypted', '.onion', '.lck', '.temp'}
 
     def calculate_entropy(self, data):
         if not data:

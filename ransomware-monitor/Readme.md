@@ -55,24 +55,27 @@ make run
 You should see output indicating that the BPF program is loading and the monitor has started.
 
 ### 3. Verify Detection
-Open a separate terminal and simulate ransomware-like behavior to trigger alerts.
+Open a separate terminal and use the provided test targets to simulate ransomware-like behavior and trigger alerts.
 
-**Detection by Extension:**
-Create a file with a suspicious extension:
+**Detection by Suspicious Extension:**
+Run the following command to simulate creating and renaming files with suspicious extensions (like `.locked` or `.crypto`):
 ```bash
-touch test_file.locked
+make test-extension
 ```
 The monitor will output:
 `[!] ALERT: Suspicious file open '.locked' detected from touch (PID XXXX)`
+`[!] ALERT: Suspicious rename to '.crypto' detected from mv (PID XXXX)`
 
 **Detection by Entropy (Encryption Simulation):**
-Run a command that writes high-entropy (random) data quickly:
+Run the following command to simulate high-frequency, high-entropy writes (e.g., random data being written quickly):
 ```bash
-dd if=/dev/urandom of=test_file_0.txt bs=1024 count=20
+make test-entropy
 ```
 The monitor will detect the high frequency and high entropy of the writes:
-`[!!!] ALERT: Potential ransomware behavior from dd (PID XXXX)`
+`[!!!] ALERT: Potential ransomware behavior from python3 (PID XXXX)`
 `      High write frequency (10 in 1.0s) and high entropy (7.xx)`
+`[X] ACTION: Terminating process python3 (PID XXXX) due to High entropy + Frequency...`
+`      (Simulation) Sent SIGKILL to PID XXXX`
 
 ### 4. Results & Actions
 The `agent/detector.py` script is currently configured to **simulate** process termination. It will print an `[X] ACTION` message but will not actually kill the process unless you uncomment `os.kill(pid, 9)` in the `take_action` method.
