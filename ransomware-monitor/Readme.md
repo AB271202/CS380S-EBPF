@@ -20,6 +20,8 @@ This is your primary application, usually written in C/Python using libraries li
 
 Heuristics & Entropy: The user-space engine evaluates the events. Is the process renaming .docx files to .locked? Is the data being written highly randomized? (High entropy in a write buffer is a strong indicator of encryption).
 
+Deletion Patterns: Is the process deleting a large number of files in a short period? Ransomware often deletes original files after encrypting them.
+
 Enforcement: If the monitor determines a PID is acting like ransomware, it can take immediate action, such as issuing a SIGKILL to terminate the process before it encrypts more files.
 
 **File Structure**
@@ -77,5 +79,83 @@ The monitor will detect the high frequency and high entropy of the writes:
 `[X] ACTION: Terminating process python3 (PID XXXX) due to High entropy + Frequency...`
 `      (Simulation) Sent SIGKILL to PID XXXX`
 
+**Detection by Deletion (High-Frequency Unlink Simulation):**
+Run the following command to simulate a process deleting a large number of files in a short period:
+```bash
+make test-unlink
+```
+The monitor will detect the high-frequency deletions:
+`[!!!] ALERT: Potential ransomware behavior from python3 (PID XXXX)`
+`      High unlink frequency (10 in 1.0s)`
+`[X] ACTION: Terminating process python3 (PID XXXX) due to High unlink frequency...`
+
 ### 4. Results & Actions
 The `agent/detector.py` script is currently configured to **simulate** process termination. It will print an `[X] ACTION` message but will not actually kill the process unless you uncomment `os.kill(pid, 9)` in the `take_action` method.
+
+
+---
+
+## False-Positive Reduction
+
+The detector includes three mechanisms to reduce false positives from legitimate high-I/O applications (compilers, databases, backup tools, editors) while improving detection confidence for actual ransomware.
+
+### 1. Process Whitelist
+
+A built-in set of trusted process names is skipped during analysis. This prevents alerts from common developer and system tools such as `git`, `gcc`, `make`, `apt`, `rsync`, `vim`, `postgres`, and many others.
+
+The whitelist can be extended at runtime via a JSON configuration file:
+
+```json
+{
+    "whitelisted_processes": ["my-backup-tool", "custom-sync"]
+}
+```
+
+Pass the config path when constructing the detector:
+
+```python
+detector = RansomwareDetector(whitelist_config="/etc/ransomware-monitor/whitelist.json")
+```
+
+Or from `main.py` by adding a `--whitelist` CLI argument.
+
+**Key behaviour:** Even whitelisted processes will trigger an alert if they access a canary file (see below). The whitelist only suppresses the standard heuristic checks.
+
+### 2. Canary (Honeypot) Files
+
+Hidden sentinel files are deployed into sensitive directories. Any non-whitelisted process that opens, writes, renames, or deletes a canary triggers an immediate **critical** alert — regardless of entropy or frequency thresholds.
+
+Deploy canaries by passing directories at init time:
+
+```python
+detector = RansomwareDetector(canary_dirs=[
+    os.path.expanduser("~/Documents"),
+    "/srv/shared",
+])
+```
+
+Default canary filenames: `.~canary_doc.docx`, `.~canary_photo.jpg`, `.~canary_data.xlsx`. Custom names can be provided via `deploy_canaries(directory, filenames=[...])`.
+
+### 3. File Header (Magic Bytes) Analysis
+
+On every WRITE event the detector inspects the first bytes of the write buffer against a table of known file-type signatures (PDF, PNG, JPEG, ZIP/DOCX, GIF, ELF, GZIP, BMP, TIFF). If the buffer does **not** match any known header **and** the entropy exceeds 6.0, the write is flagged as a **critical** "Magic bytes destroyed" alert — a strong signal that an existing file's header is being overwritten with ciphertext.
+
+This check fires per-write and is independent of the frequency/entropy accumulation window, giving faster detection for in-place encryption attacks.
+
+### Running the Unit Tests
+
+The false-positive reduction features are covered by `tests/test_detector.py` (41 tests). Run them with:
+
+```bash
+python3 -m unittest tests/test_detector.py -v
+```
+
+Test categories:
+- **TestProcessWhitelist** — verifies trusted processes are silent, unknown processes still alert, config loading, and error handling.
+- **TestCanaryFiles** — canary deployment, critical alerts on access, whitelisted-process canary access still alerts, non-canary files are not flagged.
+- **TestMagicByteAnalysis** — magic-byte identification for PDF/PNG/JPEG/ZIP, destroyed-header detection, end-to-end WRITE event triggering critical alerts.
+- **TestEntropyCalculation** — entropy edge cases (empty, uniform, random, max).
+- **TestHighEntropyWriteDetection** — frequency + entropy burst detection regression.
+- **TestSuspiciousExtensionDetection** — OPEN/RENAME with `.locked`/`.crypto` extensions.
+- **TestUnlinkDetection** — high-frequency deletion alerts and time-window expiry.
+- **TestCombinedScenarios** — realistic multi-signal scenarios: gcc compilation (no alerts), rsync mass-delete (no alerts), full ransomware attack chain (multiple alerts).

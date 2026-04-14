@@ -25,11 +25,15 @@ deps:
 
 # Simulate high-entropy writes (e.g., encryption)
 test-entropy:
-	python3 tests/simulate_ransomware.py
+	python3 tests/simulate_ransomware.py --type entropy
 
 # Simulate suspicious file extension changes
 test-extension:
 	./tests/test_extensions.sh
+
+# Simulate high-frequency unlinks
+test-unlink:
+	python3 tests/simulate_ransomware.py --type unlink
 
 # Clean up Python cache files
 clean:

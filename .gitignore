@@ -2,3 +2,9 @@
 __*
 out.txt
 .*
+*.aux
+*.fdb*
+*.fls
+*.log
+*.out
+*.synctex.gz

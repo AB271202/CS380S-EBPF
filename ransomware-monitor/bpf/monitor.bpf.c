@@ -121,7 +121,23 @@ TRACEPOINT_PROBE(syscalls, sys_enter_unlink) {
     
     bpf_probe_read_user_str(&event->filename, sizeof(event->filename), args->pathname);
     
-    // Unlink events are not currently used by the detector.
-    // Keep the hook for future rules, but avoid emitting high-volume traffic.
+    events.perf_submit(args, event, sizeof(*event));
+    return 0;
+}
+
+TRACEPOINT_PROBE(syscalls, sys_enter_unlinkat) {
+    u32 zero = 0;
+    struct event_t *event = event_heap.lookup(&zero);
+    if (!event) return 0;
+
+    __builtin_memset(event, 0, sizeof(*event));
+
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->type = EVENT_UNLINK;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    
+    bpf_probe_read_user_str(&event->filename, sizeof(event->filename), args->pathname);
+    
+    events.perf_submit(args, event, sizeof(*event));
     return 0;
 }
