@@ -5,7 +5,9 @@ Covers:
   2. Canary (honeypot) files – non-whitelisted access triggers critical alerts.
   3. Magic-byte analysis – overwriting known file headers with encrypted data
      is flagged at critical severity.
-  4. Regression – existing entropy / frequency / extension / unlink detection
+  4. Binary hash verification – tampered binaries revoke the whitelist.
+  5. Process lineage validation – untrusted parent chains revoke the whitelist.
+  6. Regression – existing entropy / frequency / extension / unlink detection
      still works correctly after the refactor.
 """
 
@@ -16,6 +18,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 # Allow running from the repo root or from the tests/ directory.
 import sys
@@ -53,7 +56,10 @@ class TestProcessWhitelist(unittest.TestCase):
     """Verify that whitelisted processes do not generate alerts."""
 
     def setUp(self):
-        self.detector = RansomwareDetector()
+        # Disable hash/lineage verification for basic name-based tests.
+        self.detector = RansomwareDetector(
+            verify_binary_hash=False, verify_lineage=False,
+        )
 
     def test_default_whitelist_contains_common_tools(self):
         for proc in ("git", "gcc", "apt", "rsync", "vim", "postgres"):
@@ -102,7 +108,10 @@ class TestProcessWhitelist(unittest.TestCase):
             json.dump({"whitelisted_processes": ["my-backup-tool", "custom-sync"]}, fh)
             cfg_path = fh.name
         try:
-            det = RansomwareDetector(whitelist_config=cfg_path)
+            det = RansomwareDetector(
+                whitelist_config=cfg_path,
+                verify_binary_hash=False, verify_lineage=False,
+            )
             self.assertTrue(det.is_whitelisted("my-backup-tool"))
             self.assertTrue(det.is_whitelisted("custom-sync"))
             # Built-in defaults are still present.
@@ -112,9 +121,324 @@ class TestProcessWhitelist(unittest.TestCase):
 
     def test_bad_whitelist_config_does_not_crash(self):
         """A missing or malformed config file should warn, not crash."""
-        det = RansomwareDetector(whitelist_config="/nonexistent/path.json")
+        det = RansomwareDetector(
+            whitelist_config="/nonexistent/path.json",
+            verify_binary_hash=False, verify_lineage=False,
+        )
         # Should still have the defaults.
         self.assertTrue(det.is_whitelisted("git"))
+
+
+# ---------------------------------------------------------------------------
+# 1b. Binary Hash Verification Tests
+# ---------------------------------------------------------------------------
+
+class TestBinaryHashVerification(unittest.TestCase):
+    """Verify that tampered binaries revoke the whitelist."""
+
+    def setUp(self):
+        # Create a temporary "binary" file with known content.
+        self.tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+        self.tmpfile.write(b"trusted-binary-content")
+        self.tmpfile.close()
+        self.good_hash = RansomwareDetector.hash_binary(self.tmpfile.name)
+
+    def tearDown(self):
+        os.unlink(self.tmpfile.name)
+
+    def test_hash_binary_returns_sha256(self):
+        digest = RansomwareDetector.hash_binary(self.tmpfile.name)
+        self.assertIsNotNone(digest)
+        self.assertEqual(len(digest), 64)  # SHA-256 hex = 64 chars
+
+    def test_hash_binary_nonexistent_returns_none(self):
+        self.assertIsNone(RansomwareDetector.hash_binary("/no/such/file"))
+
+    def test_matching_hash_keeps_whitelist(self):
+        """A whitelisted process whose binary hash matches stays trusted."""
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: [self.good_hash]},
+            verify_lineage=False,  # isolate hash test
+        )
+        # Mock _resolve_exe to return our temp file path.
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=9999))
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_mismatched_hash_revokes_whitelist(self):
+        """A whitelisted process with a wrong hash is treated as untrusted."""
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: ["bad_hash_value"]},
+            verify_lineage=False,
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ):
+            self.assertFalse(det.is_whitelisted("gcc", pid=9999))
+        hash_alerts = [a for a in det.alerts if a["reason"] == "Binary hash mismatch"]
+        self.assertEqual(len(hash_alerts), 1)
+
+    def test_no_registered_hash_is_open_trust(self):
+        """If no hashes are registered for a path, the process is trusted."""
+        det = RansomwareDetector(
+            trusted_hashes={},  # empty — no hashes registered
+            verify_lineage=False,
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value="/usr/bin/gcc"
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=9999))
+
+    def test_unreadable_exe_is_trusted(self):
+        """If /proc/<pid>/exe can't be resolved, skip the check."""
+        det = RansomwareDetector(
+            trusted_hashes={"/usr/bin/gcc": ["some_hash"]},
+            verify_lineage=False,
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=None
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=9999))
+
+    def test_hash_cache_avoids_rehashing(self):
+        """The hash should be computed once and cached for the same pid+path."""
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: [self.good_hash]},
+            verify_lineage=False,
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ), mock.patch.object(
+            RansomwareDetector, "hash_binary", wraps=RansomwareDetector.hash_binary
+        ) as mock_hash:
+            det.is_whitelisted("gcc", pid=9999)
+            det.is_whitelisted("gcc", pid=9999)
+            # hash_binary should only be called once — second call uses cache.
+            mock_hash.assert_called_once()
+
+    def test_tampered_binary_triggers_alert_on_event(self):
+        """End-to-end: a 'gcc' with a bad hash doing writes → alerts fire."""
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: ["wrong_hash"]},
+            verify_lineage=False,
+            threshold_writes=2,
+            time_window=10.0,
+        )
+        buf = os.urandom(128)
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ):
+            for i in range(5):
+                evt = _make_event(1, 9999, "gcc", f"/tmp/obj_{i}.o", 128, buf)
+                det.analyze_event(evt)
+        # Should have hash-mismatch alert(s) AND detection alerts.
+        hash_alerts = [a for a in det.alerts if a["reason"] == "Binary hash mismatch"]
+        detection_alerts = [
+            a for a in det.alerts
+            if a["reason"] in ("Magic bytes destroyed", "High entropy + Frequency")
+        ]
+        self.assertGreater(len(hash_alerts), 0)
+        self.assertGreater(len(detection_alerts), 0)
+
+    def test_load_trusted_hashes_from_config(self):
+        """Trusted hashes can be loaded from the JSON config file."""
+        cfg = {
+            "whitelisted_processes": [],
+            "trusted_hashes": {
+                "/usr/bin/myapp": ["abc123"],
+            },
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as fh:
+            json.dump(cfg, fh)
+            cfg_path = fh.name
+        try:
+            det = RansomwareDetector(whitelist_config=cfg_path, verify_lineage=False)
+            self.assertIn("/usr/bin/myapp", det.trusted_hashes)
+            self.assertIn("abc123", det.trusted_hashes["/usr/bin/myapp"])
+        finally:
+            os.unlink(cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# 1c. Process Lineage Validation Tests
+# ---------------------------------------------------------------------------
+
+class TestProcessLineageValidation(unittest.TestCase):
+    """Verify that untrusted parent chains revoke the whitelist."""
+
+    def test_trusted_parent_keeps_whitelist(self):
+        """A process with bash in its ancestry stays whitelisted."""
+        det = RansomwareDetector(verify_binary_hash=False)
+        # Mock lineage: pid 100 → bash(99) → systemd(1)
+        with mock.patch.object(
+            det, "get_process_lineage",
+            return_value=[(99, "bash"), (1, "systemd")],
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_untrusted_parent_revokes_whitelist(self):
+        """A process spawned by an unknown dropper is not trusted."""
+        det = RansomwareDetector(verify_binary_hash=False)
+        with mock.patch.object(
+            det, "get_process_lineage",
+            return_value=[(50, "evil_dropper"), (1, "unknown_init")],
+        ):
+            self.assertFalse(det.is_whitelisted("gcc", pid=100))
+        lineage_alerts = [
+            a for a in det.alerts if a["reason"] == "Untrusted process lineage"
+        ]
+        self.assertEqual(len(lineage_alerts), 1)
+
+    def test_empty_lineage_is_trusted(self):
+        """If lineage can't be read (container, short-lived), trust it."""
+        det = RansomwareDetector(verify_binary_hash=False)
+        with mock.patch.object(
+            det, "get_process_lineage", return_value=[],
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+
+    def test_lineage_cache_avoids_recheck(self):
+        """Lineage is checked once per PID and cached."""
+        det = RansomwareDetector(verify_binary_hash=False)
+        with mock.patch.object(
+            det, "get_process_lineage",
+            return_value=[(99, "bash")],
+        ) as mock_lineage:
+            det.is_whitelisted("gcc", pid=100)
+            det.is_whitelisted("gcc", pid=100)
+            mock_lineage.assert_called_once()
+
+    def test_untrusted_lineage_triggers_alert_on_event(self):
+        """End-to-end: a 'gcc' with bad lineage doing writes → alerts fire."""
+        det = RansomwareDetector(
+            verify_binary_hash=False,
+            threshold_writes=2,
+            time_window=10.0,
+        )
+        buf = os.urandom(128)
+        with mock.patch.object(
+            det, "get_process_lineage",
+            return_value=[(50, "evil_dropper")],
+        ):
+            for i in range(5):
+                evt = _make_event(1, 100, "gcc", f"/tmp/obj_{i}.o", 128, buf)
+                det.analyze_event(evt)
+        lineage_alerts = [
+            a for a in det.alerts if a["reason"] == "Untrusted process lineage"
+        ]
+        detection_alerts = [
+            a for a in det.alerts
+            if a["reason"] in ("Magic bytes destroyed", "High entropy + Frequency")
+        ]
+        self.assertGreater(len(lineage_alerts), 0)
+        self.assertGreater(len(detection_alerts), 0)
+
+    def test_custom_trusted_parents(self):
+        """Custom trusted parents can be provided at init."""
+        det = RansomwareDetector(
+            verify_binary_hash=False,
+            trusted_parents={"my_orchestrator"},
+        )
+        with mock.patch.object(
+            det, "get_process_lineage",
+            return_value=[(50, "my_orchestrator")],
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+
+    def test_load_trusted_parents_from_config(self):
+        """Trusted parents can be loaded from the JSON config file."""
+        cfg = {
+            "whitelisted_processes": [],
+            "trusted_parents": ["my_launcher"],
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as fh:
+            json.dump(cfg, fh)
+            cfg_path = fh.name
+        try:
+            det = RansomwareDetector(whitelist_config=cfg_path, verify_binary_hash=False)
+            self.assertIn("my_launcher", det.trusted_parents)
+            # Built-in defaults are still present.
+            self.assertIn("bash", det.trusted_parents)
+        finally:
+            os.unlink(cfg_path)
+
+    def test_get_process_lineage_with_real_pid(self):
+        """Smoke test: get_process_lineage on our own PID should not crash."""
+        det = RansomwareDetector(verify_binary_hash=False, verify_lineage=False)
+        lineage = det.get_process_lineage(os.getpid())
+        # We should get at least one ancestor (our parent shell/process).
+        # On some CI environments this might be empty, so just check no crash.
+        self.assertIsInstance(lineage, list)
+
+
+# ---------------------------------------------------------------------------
+# 1d. Combined Hash + Lineage Tests
+# ---------------------------------------------------------------------------
+
+class TestHashAndLineageCombined(unittest.TestCase):
+    """Verify that both checks must pass for the whitelist to hold."""
+
+    def setUp(self):
+        self.tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+        self.tmpfile.write(b"trusted-binary-content")
+        self.tmpfile.close()
+        self.good_hash = RansomwareDetector.hash_binary(self.tmpfile.name)
+
+    def tearDown(self):
+        os.unlink(self.tmpfile.name)
+
+    def test_both_pass_stays_whitelisted(self):
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: [self.good_hash]},
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ), mock.patch.object(
+            det, "get_process_lineage", return_value=[(99, "bash")],
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_hash_pass_lineage_fail_revokes(self):
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: [self.good_hash]},
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ), mock.patch.object(
+            det, "get_process_lineage", return_value=[(50, "evil_dropper")],
+        ):
+            self.assertFalse(det.is_whitelisted("gcc", pid=100))
+
+    def test_hash_fail_lineage_pass_revokes(self):
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: ["wrong_hash"]},
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ), mock.patch.object(
+            det, "get_process_lineage", return_value=[(99, "bash")],
+        ):
+            # Hash check fails first, so lineage is never reached.
+            self.assertFalse(det.is_whitelisted("gcc", pid=100))
+
+    def test_both_fail_revokes(self):
+        det = RansomwareDetector(
+            trusted_hashes={self.tmpfile.name: ["wrong_hash"]},
+        )
+        with mock.patch.object(
+            RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
+        ), mock.patch.object(
+            det, "get_process_lineage", return_value=[(50, "evil_dropper")],
+        ):
+            self.assertFalse(det.is_whitelisted("gcc", pid=100))
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +450,10 @@ class TestCanaryFiles(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.detector = RansomwareDetector(canary_dirs=[self.tmpdir])
+        self.detector = RansomwareDetector(
+            canary_dirs=[self.tmpdir],
+            verify_binary_hash=False, verify_lineage=False,
+        )
 
     def tearDown(self):
         import shutil
@@ -236,7 +563,7 @@ class TestMagicByteAnalysis(unittest.TestCase):
 
     def test_write_event_with_destroyed_header_triggers_critical(self):
         """End-to-end: a WRITE that destroys a file header → critical alert."""
-        det = RansomwareDetector()
+        det = RansomwareDetector(verify_binary_hash=False, verify_lineage=False)
         high_entropy_buf = os.urandom(128)
         evt = _make_event(1, 4000, "evil", "/home/user/photo.jpg", 128, high_entropy_buf)
         det.analyze_event(evt)
@@ -246,7 +573,7 @@ class TestMagicByteAnalysis(unittest.TestCase):
 
     def test_write_event_with_valid_header_no_magic_alert(self):
         """A write that preserves the PDF header should not trigger magic alert."""
-        det = RansomwareDetector()
+        det = RansomwareDetector(verify_binary_hash=False, verify_lineage=False)
         buf = b"%PDF" + b"\x00" * 124
         evt = _make_event(1, 4001, "evil", "/home/user/doc.pdf", 128, buf)
         det.analyze_event(evt)
@@ -294,7 +621,10 @@ class TestHighEntropyWriteDetection(unittest.TestCase):
         (per-write, if entropy > 6.0 and no known header) or the cumulative
         'High entropy + Frequency' alert.  Both are valid ransomware signals.
         """
-        det = RansomwareDetector(threshold_writes=5, time_window=10.0)
+        det = RansomwareDetector(
+            threshold_writes=5, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
         high_entropy_buf = os.urandom(128)
         for i in range(10):
             evt = _make_event(1, 5000, "evil", f"/tmp/f{i}.dat", 128, high_entropy_buf)
@@ -307,7 +637,10 @@ class TestHighEntropyWriteDetection(unittest.TestCase):
         self.assertGreater(len(relevant), 0)
 
     def test_low_entropy_burst_does_not_trigger(self):
-        det = RansomwareDetector(threshold_writes=5, time_window=10.0)
+        det = RansomwareDetector(
+            threshold_writes=5, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
         low_entropy_buf = b"\x00" * 128
         for i in range(10):
             evt = _make_event(1, 5001, "writer", f"/tmp/f{i}.dat", 128, low_entropy_buf)
@@ -318,21 +651,21 @@ class TestHighEntropyWriteDetection(unittest.TestCase):
 
 class TestSuspiciousExtensionDetection(unittest.TestCase):
     def test_open_locked_extension(self):
-        det = RansomwareDetector()
+        det = RansomwareDetector(verify_binary_hash=False, verify_lineage=False)
         evt = _make_event(0, 6000, "evil", "/home/user/file.locked", 0, b"")
         det.analyze_event(evt)
         self.assertEqual(len(det.alerts), 1)
         self.assertEqual(det.alerts[0]["reason"], "Suspicious extension")
 
     def test_rename_to_crypto_extension(self):
-        det = RansomwareDetector()
+        det = RansomwareDetector(verify_binary_hash=False, verify_lineage=False)
         evt = _make_event(2, 6001, "evil", "/home/user/file.crypto", 0, b"")
         det.analyze_event(evt)
         self.assertEqual(len(det.alerts), 1)
         self.assertEqual(det.alerts[0]["reason"], "Suspicious rename")
 
     def test_normal_extension_no_alert(self):
-        det = RansomwareDetector()
+        det = RansomwareDetector(verify_binary_hash=False, verify_lineage=False)
         evt = _make_event(0, 6002, "evil", "/home/user/file.txt", 0, b"")
         det.analyze_event(evt)
         self.assertEqual(len(det.alerts), 0)
@@ -340,7 +673,10 @@ class TestSuspiciousExtensionDetection(unittest.TestCase):
 
 class TestUnlinkDetection(unittest.TestCase):
     def test_high_frequency_unlinks_trigger_alert(self):
-        det = RansomwareDetector(threshold_unlinks=3, time_window=10.0)
+        det = RansomwareDetector(
+            threshold_unlinks=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
         for i in range(5):
             evt = _make_event(3, 7000, "evil", f"/tmp/f{i}.txt", 0, b"")
             det.analyze_event(evt)
@@ -348,7 +684,10 @@ class TestUnlinkDetection(unittest.TestCase):
         self.assertGreater(len(alerts), 0)
 
     def test_slow_unlinks_do_not_trigger(self):
-        det = RansomwareDetector(threshold_unlinks=5, time_window=0.01)
+        det = RansomwareDetector(
+            threshold_unlinks=5, time_window=0.01,
+            verify_binary_hash=False, verify_lineage=False,
+        )
         for i in range(5):
             evt = _make_event(3, 7001, "cleaner", f"/tmp/f{i}.txt", 0, b"")
             det.analyze_event(evt)
@@ -366,7 +705,10 @@ class TestCombinedScenarios(unittest.TestCase):
 
     def test_whitelisted_gcc_compile_no_alerts(self):
         """Simulates a gcc compilation: many high-entropy .o writes."""
-        det = RansomwareDetector(threshold_writes=3, time_window=10.0)
+        det = RansomwareDetector(
+            threshold_writes=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
         buf = os.urandom(128)
         for i in range(20):
             evt = _make_event(1, 8000, "gcc", f"/build/obj_{i}.o", 128, buf)
@@ -375,7 +717,10 @@ class TestCombinedScenarios(unittest.TestCase):
 
     def test_whitelisted_rsync_mass_delete_no_alerts(self):
         """rsync cleaning up old files should not trigger unlink alerts."""
-        det = RansomwareDetector(threshold_unlinks=3, time_window=10.0)
+        det = RansomwareDetector(
+            threshold_unlinks=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
         for i in range(50):
             evt = _make_event(3, 8001, "rsync", f"/backup/old_{i}.bak", 0, b"")
             det.analyze_event(evt)
@@ -385,6 +730,7 @@ class TestCombinedScenarios(unittest.TestCase):
         """An unknown process doing writes + renames + deletes → multiple alerts."""
         det = RansomwareDetector(
             threshold_writes=3, threshold_unlinks=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
         )
         buf = os.urandom(128)
         # High-entropy writes
@@ -403,6 +749,739 @@ class TestCombinedScenarios(unittest.TestCase):
         # Should see at least magic-bytes or entropy alerts, rename, and unlink.
         self.assertTrue(len(det.alerts) >= 3, f"Expected >=3 alerts, got {det.alerts}")
         self.assertIn("Suspicious rename", reasons)
+
+
+# ---------------------------------------------------------------------------
+# 6. Write Target Classification Tests
+# ---------------------------------------------------------------------------
+
+class TestWriteTargetClassification(unittest.TestCase):
+    """Verify that system-path writes are excluded from heuristics."""
+
+    def test_dev_path_is_not_user_file(self):
+        self.assertFalse(RansomwareDetector.is_user_file("/dev/sda"))
+        self.assertFalse(RansomwareDetector.is_user_file("/dev/null"))
+
+    def test_proc_path_is_not_user_file(self):
+        self.assertFalse(RansomwareDetector.is_user_file("/proc/1/maps"))
+
+    def test_sys_path_is_not_user_file(self):
+        self.assertFalse(RansomwareDetector.is_user_file("/sys/class/net/eth0"))
+
+    def test_var_log_is_not_user_file(self):
+        self.assertFalse(RansomwareDetector.is_user_file("/var/log/syslog"))
+
+    def test_var_lib_is_not_user_file(self):
+        self.assertFalse(RansomwareDetector.is_user_file("/var/lib/dpkg/status"))
+
+    def test_home_path_is_user_file(self):
+        self.assertTrue(RansomwareDetector.is_user_file("/home/user/doc.pdf"))
+
+    def test_srv_path_is_user_file(self):
+        self.assertTrue(RansomwareDetector.is_user_file("/srv/data/report.xlsx"))
+
+    def test_tmp_regular_is_user_file(self):
+        self.assertTrue(RansomwareDetector.is_user_file("/tmp/output.dat"))
+
+    def test_is_user_document_common_types(self):
+        for ext in (".pdf", ".docx", ".jpg", ".py", ".sql"):
+            self.assertTrue(
+                RansomwareDetector.is_user_document(f"/home/user/file{ext}"),
+                f"{ext} should be a user document",
+            )
+
+    def test_is_user_document_unknown_ext(self):
+        self.assertFalse(RansomwareDetector.is_user_document("/home/user/file.xyz123"))
+
+    def test_system_path_writes_do_not_trigger_alerts(self):
+        """High-entropy writes to /dev/ should be silently ignored."""
+        det = RansomwareDetector(
+            threshold_writes=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        for i in range(20):
+            evt = _make_event(1, 11000, "defrag", f"/dev/sda", 128, buf)
+            det.analyze_event(evt)
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_var_lib_writes_do_not_trigger_alerts(self):
+        """Database writes to /var/lib/ should be silently ignored."""
+        det = RansomwareDetector(
+            threshold_writes=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        for i in range(20):
+            evt = _make_event(1, 11001, "mysqld_fake", f"/var/lib/mysql/db_{i}.ibd", 128, buf)
+            det.analyze_event(evt)
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_user_path_writes_still_trigger_alerts(self):
+        """High-entropy writes to /home/ should still trigger alerts."""
+        det = RansomwareDetector(
+            threshold_writes=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        for i in range(10):
+            evt = _make_event(1, 11002, "evil", f"/home/user/file_{i}.doc", 128, buf)
+            det.analyze_event(evt)
+        relevant = [
+            a for a in det.alerts
+            if a["reason"] in ("Magic bytes destroyed", "High entropy + Frequency",
+                               "High file diversity + Entropy")
+        ]
+        self.assertGreater(len(relevant), 0)
+
+
+# ---------------------------------------------------------------------------
+# 7. File Diversity Scoring Tests
+# ---------------------------------------------------------------------------
+
+class TestFileDiversityScoring(unittest.TestCase):
+    """Verify that file diversity across directories is detected."""
+
+    def test_diverse_writes_across_dirs_triggers_alert(self):
+        """Writes to many unique files across many directories → alert."""
+        det = RansomwareDetector(
+            threshold_unique_files=5,
+            threshold_unique_dirs=3,
+            threshold_writes=100,  # Set high so frequency check doesn't fire first
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        dirs = ["/home/user/Documents", "/home/user/Pictures",
+                "/home/user/Desktop", "/srv/shared"]
+        for i, d in enumerate(dirs):
+            for j in range(3):
+                evt = _make_event(
+                    1, 12000, "evil",
+                    f"{d}/file_{j}.doc", 128, buf,
+                )
+                det.analyze_event(evt)
+        diversity_alerts = [
+            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
+        ]
+        self.assertGreater(len(diversity_alerts), 0)
+
+    def test_writes_to_single_dir_no_diversity_alert(self):
+        """Many writes to the same directory should NOT trigger diversity alert."""
+        det = RansomwareDetector(
+            threshold_unique_files=5,
+            threshold_unique_dirs=3,
+            threshold_writes=100,  # Disable frequency check
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        for i in range(20):
+            evt = _make_event(
+                1, 12001, "builder",
+                f"/tmp/build/obj_{i}.o", 128, buf,
+            )
+            det.analyze_event(evt)
+        diversity_alerts = [
+            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
+        ]
+        self.assertEqual(len(diversity_alerts), 0)
+
+    def test_low_entropy_diverse_writes_no_alert(self):
+        """Diverse writes with low entropy (e.g. text) should not alert."""
+        det = RansomwareDetector(
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = b"A" * 128  # Low entropy
+        dirs = ["/home/user/a", "/home/user/b", "/home/user/c"]
+        for d in dirs:
+            for j in range(3):
+                evt = _make_event(1, 12002, "writer", f"{d}/f{j}.txt", 128, buf)
+                det.analyze_event(evt)
+        diversity_alerts = [
+            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
+        ]
+        self.assertEqual(len(diversity_alerts), 0)
+
+    def test_get_file_diversity_counts(self):
+        """Verify the diversity counter returns correct unique counts."""
+        det = RansomwareDetector(
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        now = time.time()
+        det.process_stats[999] = [
+            (now, 7.0, "/home/user/a/f1.doc"),
+            (now, 7.0, "/home/user/a/f2.doc"),
+            (now, 7.0, "/home/user/b/f3.doc"),
+            (now, 7.0, "/home/user/c/f4.doc"),
+        ]
+        files, dirs = det.get_file_diversity(999)
+        self.assertEqual(files, 4)
+        self.assertEqual(dirs, 3)
+
+    def test_defrag_same_files_no_diversity_alert(self):
+        """A defragmenter writing to the same file repeatedly → no diversity."""
+        det = RansomwareDetector(
+            threshold_unique_files=5,
+            threshold_unique_dirs=3,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        # Same file, many writes — like a defrag or database
+        for i in range(50):
+            evt = _make_event(1, 12003, "defrag", "/home/user/bigfile.dat", 128, buf)
+            det.analyze_event(evt)
+        diversity_alerts = [
+            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
+        ]
+        self.assertEqual(len(diversity_alerts), 0)
+
+
+# ---------------------------------------------------------------------------
+# 8. Directory Traversal Detection Tests
+# ---------------------------------------------------------------------------
+
+class TestDirectoryTraversalDetection(unittest.TestCase):
+    """Verify that rapid directory scanning + writes triggers alerts."""
+
+    def test_dir_scan_with_writes_triggers_alert(self):
+        """Scanning many directories while also writing → alert."""
+        det = RansomwareDetector(
+            threshold_dir_scans=3,
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        # First, some writes to establish write activity
+        for i in range(3):
+            evt = _make_event(1, 13000, "evil", f"/home/user/f{i}.doc", 128, buf)
+            det.analyze_event(evt)
+        # Then, rapid directory scans (event type 4 = GETDENTS)
+        dirs = ["/home/user/Documents", "/home/user/Pictures",
+                "/home/user/Music", "/home/user/Videos"]
+        for d in dirs:
+            evt = _make_event(4, 13000, "evil", f"{d}/somefile", 0, b"")
+            det.analyze_event(evt)
+        traversal_alerts = [
+            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
+        ]
+        self.assertGreater(len(traversal_alerts), 0)
+
+    def test_dir_scan_without_writes_no_alert(self):
+        """Directory scanning alone (no writes) should not trigger."""
+        det = RansomwareDetector(
+            threshold_dir_scans=3,
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        dirs = ["/home/a", "/home/b", "/home/c", "/home/d", "/home/e"]
+        for d in dirs:
+            evt = _make_event(4, 13001, "find", f"{d}/x", 0, b"")
+            det.analyze_event(evt)
+        traversal_alerts = [
+            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
+        ]
+        self.assertEqual(len(traversal_alerts), 0)
+
+    def test_few_dir_scans_no_alert(self):
+        """Scanning fewer directories than the threshold → no alert."""
+        det = RansomwareDetector(
+            threshold_dir_scans=5,
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        evt = _make_event(1, 13002, "evil", "/home/user/f.doc", 128, buf)
+        det.analyze_event(evt)
+        # Only 2 directory scans — below threshold of 5
+        for d in ["/home/a", "/home/b"]:
+            evt = _make_event(4, 13002, "evil", f"{d}/x", 0, b"")
+            det.analyze_event(evt)
+        traversal_alerts = [
+            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
+        ]
+        self.assertEqual(len(traversal_alerts), 0)
+
+    def test_dir_scans_expire_outside_window(self):
+        """Old directory scans outside the time window should not count."""
+        det = RansomwareDetector(
+            threshold_dir_scans=3,
+            time_window=0.01,  # Very short window
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        evt = _make_event(1, 13003, "evil", "/home/user/f.doc", 128, buf)
+        det.analyze_event(evt)
+        for d in ["/home/a", "/home/b", "/home/c", "/home/d"]:
+            evt = _make_event(4, 13003, "evil", f"{d}/x", 0, b"")
+            det.analyze_event(evt)
+            time.sleep(0.02)  # Each scan expires before the next
+        traversal_alerts = [
+            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
+        ]
+        self.assertEqual(len(traversal_alerts), 0)
+
+
+# ---------------------------------------------------------------------------
+# 9. Defragmenter vs Ransomware Scenario Tests
+# ---------------------------------------------------------------------------
+
+class TestDefragVsRansomware(unittest.TestCase):
+    """End-to-end scenarios comparing defragmenter and ransomware behavior."""
+
+    def test_defrag_block_device_writes_no_alerts(self):
+        """A defragmenter writing to /dev/sda with high entropy → no alerts."""
+        det = RansomwareDetector(
+            threshold_writes=3, threshold_unique_files=3,
+            threshold_unique_dirs=2, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        for i in range(50):
+            evt = _make_event(1, 14000, "e4defrag", "/dev/sda1", 128, buf)
+            det.analyze_event(evt)
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_defrag_single_file_repeated_writes_no_alerts(self):
+        """A defragmenter rewriting a single user file repeatedly → no diversity alert."""
+        det = RansomwareDetector(
+            threshold_writes=100,  # Disable frequency
+            threshold_unique_files=5, threshold_unique_dirs=3,
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        for i in range(50):
+            evt = _make_event(1, 14001, "defrag", "/home/user/largefile.img", 128, buf)
+            det.analyze_event(evt)
+        diversity_alerts = [
+            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
+        ]
+        self.assertEqual(len(diversity_alerts), 0)
+
+    def test_ransomware_multi_dir_encryption_detected(self):
+        """Ransomware encrypting files across directories → diversity alert."""
+        det = RansomwareDetector(
+            threshold_unique_files=4, threshold_unique_dirs=2,
+            threshold_writes=100,  # Disable frequency to isolate diversity
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        targets = [
+            "/home/user/Documents/report.docx",
+            "/home/user/Documents/budget.xlsx",
+            "/home/user/Pictures/photo1.jpg",
+            "/home/user/Pictures/photo2.png",
+            "/home/user/Desktop/notes.txt",
+        ]
+        for f in targets:
+            evt = _make_event(1, 14002, "cryptolocker", f, 128, buf)
+            det.analyze_event(evt)
+        diversity_alerts = [
+            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
+        ]
+        self.assertGreater(len(diversity_alerts), 0)
+
+    def test_ransomware_scan_then_encrypt_detected(self):
+        """Ransomware scanning directories then encrypting → traversal alert."""
+        det = RansomwareDetector(
+            threshold_dir_scans=3,
+            time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        # Phase 1: scan directories
+        scan_dirs = ["/home/user/Documents", "/home/user/Pictures",
+                     "/home/user/Music"]
+        # Phase 2: encrypt files (writes first so process_stats has entries)
+        for d in scan_dirs:
+            evt = _make_event(1, 14003, "locker", f"{d}/file.doc", 128, buf)
+            det.analyze_event(evt)
+        # Now scan
+        for d in scan_dirs:
+            evt = _make_event(4, 14003, "locker", f"{d}/.", 0, b"")
+            det.analyze_event(evt)
+        traversal_alerts = [
+            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
+        ]
+        self.assertGreater(len(traversal_alerts), 0)
+
+    def test_database_var_lib_writes_no_alerts(self):
+        """A database writing to /var/lib/ with high entropy → no alerts."""
+        det = RansomwareDetector(
+            threshold_writes=3, time_window=10.0,
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        for i in range(30):
+            evt = _make_event(
+                1, 14004, "postgres_fake",
+                f"/var/lib/postgresql/data/base/{i}.dat", 128, buf,
+            )
+            det.analyze_event(evt)
+        self.assertEqual(len(det.alerts), 0)
+
+
+# ---------------------------------------------------------------------------
+# 10. In-Place Overwrite Detection Tests
+# ---------------------------------------------------------------------------
+
+class TestInPlaceOverwriteDetection(unittest.TestCase):
+    """Verify that writing high-entropy data back to an opened file is flagged."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=10.0, threshold_writes=100,
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_overwrite_opened_file_triggers_alert(self):
+        """OPEN a file, then WRITE high-entropy data to it → in-place alert."""
+        det = self._det()
+        # Open the file (event type 0)
+        evt = _make_event(0, 15000, "evil", "/home/user/photo.jpg", 0, b"")
+        det.analyze_event(evt)
+        # Write high-entropy data to the same file
+        buf = os.urandom(128)
+        evt = _make_event(1, 15000, "evil", "/home/user/photo.jpg", 128, buf)
+        det.analyze_event(evt)
+        overwrite_alerts = [
+            a for a in det.alerts if a["reason"] == "In-place overwrite"
+        ]
+        self.assertGreater(len(overwrite_alerts), 0)
+
+    def test_write_to_new_file_no_overwrite_alert(self):
+        """Writing to a file that was never opened → no in-place alert."""
+        det = self._det()
+        buf = os.urandom(128)
+        evt = _make_event(1, 15001, "evil", "/home/user/newfile.enc", 128, buf)
+        det.analyze_event(evt)
+        overwrite_alerts = [
+            a for a in det.alerts if a["reason"] == "In-place overwrite"
+        ]
+        self.assertEqual(len(overwrite_alerts), 0)
+
+    def test_low_entropy_overwrite_no_alert(self):
+        """Overwriting with low-entropy data (e.g. text) → no alert."""
+        det = self._det()
+        evt = _make_event(0, 15002, "editor", "/home/user/notes.txt", 0, b"")
+        det.analyze_event(evt)
+        buf = b"A" * 128
+        evt = _make_event(1, 15002, "editor", "/home/user/notes.txt", 128, buf)
+        det.analyze_event(evt)
+        overwrite_alerts = [
+            a for a in det.alerts if a["reason"] == "In-place overwrite"
+        ]
+        self.assertEqual(len(overwrite_alerts), 0)
+
+    def test_legitimate_gz_output_no_overwrite_alert(self):
+        """gzip: open report.txt, write to report.txt.gz → no alert."""
+        det = self._det()
+        # Open the source
+        evt = _make_event(0, 15003, "gzip_sim", "/home/user/report.txt", 0, b"")
+        det.analyze_event(evt)
+        # Write compressed output to a .gz derivative
+        buf = os.urandom(128)
+        evt = _make_event(1, 15003, "gzip_sim", "/home/user/report.txt.gz", 128, buf)
+        det.analyze_event(evt)
+        overwrite_alerts = [
+            a for a in det.alerts if a["reason"] == "In-place overwrite"
+        ]
+        self.assertEqual(len(overwrite_alerts), 0)
+
+
+# ---------------------------------------------------------------------------
+# 11. Output-to-Input Path Correlation Tests
+# ---------------------------------------------------------------------------
+
+class TestOutputPathCorrelation(unittest.TestCase):
+    """Verify legitimate vs ransomware output naming detection."""
+
+    def test_gz_suffix_is_legitimate(self):
+        opened = ["/home/user/data.csv"]
+        self.assertTrue(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/data.csv.gz", opened
+            )
+        )
+
+    def test_gpg_suffix_is_legitimate(self):
+        opened = ["/home/user/secret.txt"]
+        self.assertTrue(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/secret.txt.gpg", opened
+            )
+        )
+
+    def test_zip_base_match_is_legitimate(self):
+        opened = ["/home/user/archive.docx"]
+        self.assertTrue(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/archive.zip", opened
+            )
+        )
+
+    def test_xz_suffix_is_legitimate(self):
+        opened = ["/home/user/dump.sql"]
+        self.assertTrue(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/dump.sql.xz", opened
+            )
+        )
+
+    def test_locked_suffix_is_not_legitimate(self):
+        opened = ["/home/user/photo.jpg"]
+        self.assertFalse(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/photo.jpg.locked", opened
+            )
+        )
+
+    def test_random_extension_is_not_legitimate(self):
+        opened = ["/home/user/report.docx"]
+        self.assertFalse(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/report.docx.a1b2c3", opened
+            )
+        )
+
+    def test_unrelated_name_is_not_legitimate(self):
+        opened = ["/home/user/budget.xlsx"]
+        self.assertFalse(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/totally_different.enc", opened
+            )
+        )
+
+    def test_no_opened_files_is_not_legitimate(self):
+        self.assertFalse(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/file.gz", []
+            )
+        )
+
+    def test_enc_suffix_is_legitimate(self):
+        opened = ["/home/user/backup.tar"]
+        self.assertTrue(
+            RansomwareDetector.is_legitimate_output_name(
+                "/home/user/backup.tar.enc", opened
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. Write-Then-Unlink Correlation Tests
+# ---------------------------------------------------------------------------
+
+class TestWriteThenUnlinkCorrelation(unittest.TestCase):
+    """Verify detection of the encrypt-copy-then-delete-original pattern."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=10.0, threshold_writes=100,
+            threshold_unlinks=100,  # Disable frequency unlink alert
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_write_multiple_then_delete_original_triggers(self):
+        """Write to 3+ files, then delete a different file → alert."""
+        det = self._det()
+        buf = os.urandom(128)
+        # Write encrypted copies
+        for i in range(4):
+            evt = _make_event(1, 16000, "evil", f"/home/user/f{i}.locked", 128, buf)
+            det.analyze_event(evt)
+        # Delete an original (different from write targets)
+        evt = _make_event(3, 16000, "evil", "/home/user/original.docx", 0, b"")
+        det.analyze_event(evt)
+        wtu_alerts = [
+            a for a in det.alerts if a["reason"] == "Write-then-delete"
+        ]
+        self.assertGreater(len(wtu_alerts), 0)
+
+    def test_delete_own_write_target_no_alert(self):
+        """Deleting a file you just wrote to is normal (temp file cleanup)."""
+        det = self._det()
+        buf = os.urandom(128)
+        for i in range(4):
+            evt = _make_event(1, 16001, "builder", f"/tmp/out_{i}.o", 128, buf)
+            det.analyze_event(evt)
+        # Delete one of the files we wrote to
+        evt = _make_event(3, 16001, "builder", "/tmp/out_0.o", 0, b"")
+        det.analyze_event(evt)
+        wtu_alerts = [
+            a for a in det.alerts if a["reason"] == "Write-then-delete"
+        ]
+        self.assertEqual(len(wtu_alerts), 0)
+
+    def test_single_write_then_delete_no_alert(self):
+        """gzip pattern: write one .gz, delete one source → no alert (< 3 targets)."""
+        det = self._det()
+        buf = os.urandom(128)
+        evt = _make_event(1, 16002, "gzip_sim", "/home/user/data.csv.gz", 128, buf)
+        det.analyze_event(evt)
+        evt = _make_event(3, 16002, "gzip_sim", "/home/user/data.csv", 0, b"")
+        det.analyze_event(evt)
+        wtu_alerts = [
+            a for a in det.alerts if a["reason"] == "Write-then-delete"
+        ]
+        self.assertEqual(len(wtu_alerts), 0)
+
+    def test_low_entropy_writes_then_delete_no_alert(self):
+        """Low-entropy writes followed by deletes → no alert."""
+        det = self._det()
+        buf = b"A" * 128
+        for i in range(5):
+            evt = _make_event(1, 16003, "writer", f"/home/user/f{i}.txt", 128, buf)
+            det.analyze_event(evt)
+        evt = _make_event(3, 16003, "writer", "/home/user/original.txt", 0, b"")
+        det.analyze_event(evt)
+        wtu_alerts = [
+            a for a in det.alerts if a["reason"] == "Write-then-delete"
+        ]
+        self.assertEqual(len(wtu_alerts), 0)
+
+    def test_write_targets_expire_outside_window(self):
+        """Old write targets outside the time window should not count."""
+        det = self._det(time_window=0.01)
+        buf = os.urandom(128)
+        for i in range(4):
+            evt = _make_event(1, 16004, "evil", f"/home/user/f{i}.locked", 128, buf)
+            det.analyze_event(evt)
+            time.sleep(0.02)
+        evt = _make_event(3, 16004, "evil", "/home/user/original.docx", 0, b"")
+        det.analyze_event(evt)
+        wtu_alerts = [
+            a for a in det.alerts if a["reason"] == "Write-then-delete"
+        ]
+        self.assertEqual(len(wtu_alerts), 0)
+
+
+# ---------------------------------------------------------------------------
+# 13. Legitimate Encryption vs Ransomware Scenario Tests
+# ---------------------------------------------------------------------------
+
+class TestLegitEncryptionVsRansomware(unittest.TestCase):
+    """End-to-end scenarios comparing zip/gzip/gpg with ransomware."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=10.0, threshold_writes=100,
+            threshold_unlinks=100,
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_gzip_single_file_no_alerts(self):
+        """gzip: open file, write .gz, delete original → no ransomware alerts."""
+        det = self._det()
+        # Open source
+        evt = _make_event(0, 17000, "gzip_sim", "/home/user/data.csv", 0, b"")
+        det.analyze_event(evt)
+        # Write compressed output
+        buf = os.urandom(128)
+        evt = _make_event(1, 17000, "gzip_sim", "/home/user/data.csv.gz", 128, buf)
+        det.analyze_event(evt)
+        # Delete original
+        evt = _make_event(3, 17000, "gzip_sim", "/home/user/data.csv", 0, b"")
+        det.analyze_event(evt)
+        # Should have no in-place, no write-then-delete alerts
+        bad_alerts = [
+            a for a in det.alerts
+            if a["reason"] in ("In-place overwrite", "Write-then-delete")
+        ]
+        self.assertEqual(len(bad_alerts), 0)
+
+    def test_gpg_encrypt_file_no_in_place_alert(self):
+        """gpg: open secret.txt, write secret.txt.gpg → no in-place alert."""
+        det = self._det()
+        evt = _make_event(0, 17001, "gpg_sim", "/home/user/secret.txt", 0, b"")
+        det.analyze_event(evt)
+        buf = os.urandom(128)
+        evt = _make_event(1, 17001, "gpg_sim", "/home/user/secret.txt.gpg", 128, buf)
+        det.analyze_event(evt)
+        overwrite_alerts = [
+            a for a in det.alerts if a["reason"] == "In-place overwrite"
+        ]
+        self.assertEqual(len(overwrite_alerts), 0)
+
+    def test_ransomware_in_place_encrypt_detected(self):
+        """Ransomware: open photo.jpg, write ciphertext back to photo.jpg → alert."""
+        det = self._det()
+        evt = _make_event(0, 17002, "locker", "/home/user/photo.jpg", 0, b"")
+        det.analyze_event(evt)
+        buf = os.urandom(128)
+        evt = _make_event(1, 17002, "locker", "/home/user/photo.jpg", 128, buf)
+        det.analyze_event(evt)
+        overwrite_alerts = [
+            a for a in det.alerts if a["reason"] == "In-place overwrite"
+        ]
+        self.assertGreater(len(overwrite_alerts), 0)
+
+    def test_ransomware_encrypt_then_delete_detected(self):
+        """Ransomware: write .locked copies, delete originals → alert."""
+        det = self._det()
+        buf = os.urandom(128)
+        originals = [
+            "/home/user/Documents/report.docx",
+            "/home/user/Pictures/photo.jpg",
+            "/home/user/Desktop/notes.txt",
+        ]
+        # Write encrypted copies
+        for f in originals:
+            evt = _make_event(1, 17003, "locker", f + ".locked", 128, buf)
+            det.analyze_event(evt)
+        # Delete originals
+        for f in originals:
+            evt = _make_event(3, 17003, "locker", f, 0, b"")
+            det.analyze_event(evt)
+        wtu_alerts = [
+            a for a in det.alerts if a["reason"] == "Write-then-delete"
+        ]
+        self.assertGreater(len(wtu_alerts), 0)
+
+    def test_zip_multiple_files_no_write_then_delete(self):
+        """zip: writes to one archive.zip, no source deletion → no alert."""
+        det = self._det()
+        buf = os.urandom(128)
+        # zip writes all data to a single output file
+        for i in range(10):
+            evt = _make_event(1, 17004, "zip_sim", "/home/user/archive.zip", 128, buf)
+            det.analyze_event(evt)
+        wtu_alerts = [
+            a for a in det.alerts if a["reason"] == "Write-then-delete"
+        ]
+        self.assertEqual(len(wtu_alerts), 0)
+
+    def test_tar_gz_pipeline_no_alerts(self):
+        """tar | gzip: writes to archive.tar.gz → no ransomware alerts."""
+        det = self._det()
+        # Open source directory listing (simulated)
+        evt = _make_event(0, 17005, "tar_sim", "/home/user/project", 0, b"")
+        det.analyze_event(evt)
+        buf = os.urandom(128)
+        # Write to archive
+        for i in range(5):
+            evt = _make_event(1, 17005, "tar_sim", "/home/user/project.tar.gz", 128, buf)
+            det.analyze_event(evt)
+        bad_alerts = [
+            a for a in det.alerts
+            if a["reason"] in ("In-place overwrite", "Write-then-delete")
+        ]
+        self.assertEqual(len(bad_alerts), 0)
 
 
 if __name__ == "__main__":

@@ -103,11 +103,17 @@ The detector includes three mechanisms to reduce false positives from legitimate
 
 A built-in set of trusted process names is skipped during analysis. This prevents alerts from common developer and system tools such as `git`, `gcc`, `make`, `apt`, `rsync`, `vim`, `postgres`, and many others.
 
+The whitelist is hardened with two additional verification layers (see sections 4 and 5 below) to prevent adversaries from abusing whitelisted process names.
+
 The whitelist can be extended at runtime via a JSON configuration file:
 
 ```json
 {
-    "whitelisted_processes": ["my-backup-tool", "custom-sync"]
+    "whitelisted_processes": ["my-backup-tool", "custom-sync"],
+    "trusted_hashes": {
+        "/usr/bin/my-backup-tool": ["sha256_hex_digest_here"]
+    },
+    "trusted_parents": ["my-orchestrator"]
 }
 ```
 
@@ -142,9 +148,138 @@ On every WRITE event the detector inspects the first bytes of the write buffer a
 
 This check fires per-write and is independent of the frequency/entropy accumulation window, giving faster detection for in-place encryption attacks.
 
+### 4. Binary Hash Verification
+
+A name-based whitelist alone can be bypassed if an adversary replaces or injects code into a trusted binary (e.g., swapping `/usr/bin/gcc` with a malicious executable, or using `LD_PRELOAD` hijacking). To counter this, the detector computes the SHA-256 hash of the on-disk executable (`/proc/<pid>/exe`) for every whitelisted process and compares it against a set of known-good digests.
+
+**How it works:**
+- When a whitelisted process name is seen, the detector resolves `/proc/<pid>/exe` to the real binary path.
+- The SHA-256 of that binary is computed and compared against registered trusted hashes.
+- If the hash does **not** match, the whitelist is **revoked** for that process and a `"Binary hash mismatch"` alert is recorded. The process then goes through full heuristic analysis.
+- Results are cached per `(pid, exe_path)` to avoid re-hashing on every event.
+
+**Open trust model:** If no hashes are registered for a given binary path, the check is skipped (the process is trusted by name alone). This allows gradual adoption — you only need to register hashes for binaries you want to lock down.
+
+Register trusted hashes via the config file:
+
+```json
+{
+    "trusted_hashes": {
+        "/usr/bin/gcc-12": ["e3b0c44298fc1c149afbf4c8996fb924..."],
+        "/usr/bin/rsync": ["a1b2c3d4..."]
+    }
+}
+```
+
+Or programmatically:
+
+```python
+detector = RansomwareDetector(
+    trusted_hashes={"/usr/bin/gcc-12": ["sha256_hex_digest"]},
+)
+```
+
+Generate a hash for a binary: `sha256sum /usr/bin/gcc-12`
+
+### 5. Process Lineage Validation
+
+Even with hash verification, an adversary could compile a clean copy of `gcc` and run it from a malicious dropper. To catch this, the detector walks the parent-process chain via `/proc/<pid>/status` and checks that at least one ancestor has a comm name in the set of trusted parents.
+
+**How it works:**
+- The parent chain is walked up to 10 levels (configurable).
+- If at least one ancestor is in the trusted parents set (`bash`, `sh`, `make`, `systemd`, `sshd`, `sudo`, `cron`, `docker`, etc.), the process is considered legitimate.
+- If **no** trusted ancestor is found, the whitelist is **revoked** and an `"Untrusted process lineage"` alert is recorded.
+- Results are cached per PID.
+
+**Default trusted parents:** `bash`, `sh`, `zsh`, `fish`, `dash`, `sshd`, `login`, `su`, `sudo`, `systemd`, `init`, `make`, `cmake`, `ninja`, `cron`, `anacron`, `atd`, `screen`, `tmux`, `docker`, `containerd`, `containerd-shim`.
+
+Extend via config:
+
+```json
+{
+    "trusted_parents": ["my-orchestrator", "custom-scheduler"]
+}
+```
+
+Or programmatically:
+
+```python
+detector = RansomwareDetector(
+    trusted_parents={"bash", "my_orchestrator"},
+)
+```
+
+**Both checks must pass.** If the binary hash matches but the lineage is untrusted (or vice versa), the whitelist is revoked. Either verification can be independently disabled via `verify_binary_hash=False` or `verify_lineage=False`.
+
+### 6. File Diversity Scoring
+
+Raw write frequency and entropy alone cannot distinguish ransomware from a disk defragmenter or database — both produce high-entropy writes at high frequency. The key difference is *what* they write to.
+
+The detector now tracks how many **unique file paths** and **unique parent directories** each PID writes to within the time window. A process touching `report.docx`, `photo.jpg`, and `budget.xlsx` across `/home/user/Documents`, `/home/user/Pictures`, and `/home/user/Desktop` is far more suspicious than one writing to `/dev/sda1` fifty times.
+
+**Thresholds (configurable):**
+- `threshold_unique_files` (default: 8) — minimum unique file paths in the window
+- `threshold_unique_dirs` (default: 3) — minimum unique parent directories
+
+Both thresholds must be exceeded *and* the average entropy must be above `threshold_entropy` for the alert to fire. This means:
+- A defragmenter writing to the same file or block device repeatedly → **no alert**
+- A database writing many files under `/var/lib/` → **no alert** (system path, see below)
+- Ransomware encrypting files across `~/Documents`, `~/Pictures`, `~/Desktop` → **alert**
+
+### 7. Directory Traversal Detection
+
+Ransomware typically scans the filesystem for targets before encrypting. The eBPF layer now hooks `getdents64` (the syscall behind `readdir`) and sends `GETDENTS` events (type 4) to user space.
+
+The detector tracks how many **unique directories** a PID has listed within the time window. If the count exceeds `threshold_dir_scans` (default: 5) **and** the process has recent write activity, a critical `"Directory traversal + Writes"` alert fires.
+
+This catches the "scan then encrypt" pattern that is a strong ransomware signature. A tool like `find` or `ls -R` that only reads directories without writing will not trigger the alert.
+
+### 8. Write Target Classification
+
+Writes to system paths are now excluded from all entropy, frequency, and diversity heuristics. The following path prefixes are classified as non-user targets:
+
+- `/dev/` — block and character devices
+- `/proc/` — procfs
+- `/sys/` — sysfs
+- `/run/` — runtime state
+- `/tmp/.` — hidden temp files
+- `/var/log/` — log files
+- `/var/lib/` — package and database state
+- `/var/cache/` — caches
+
+This means a defragmenter writing high-entropy data to `/dev/sda1`, or a database writing to `/var/lib/postgresql/`, will produce **zero alerts** regardless of frequency or entropy. Only writes to user-accessible paths (e.g., `/home/`, `/srv/`, `/opt/`) are analyzed.
+
+### 9. In-Place Overwrite Detection
+
+Legitimate encryption and compression tools read a source file and write to a **new** output file (`report.docx` → `report.docx.gz`). Ransomware opens a file and writes ciphertext **back to the same file**, destroying the original in-place.
+
+The detector tracks OPEN events per PID. When a subsequent WRITE targets the same file path with high-entropy data, and the output name is not a legitimate derivative of any opened file (see section 10), a critical `"In-place overwrite"` alert fires.
+
+This catches the most destructive ransomware pattern — in-place encryption — while allowing normal editor saves (low entropy) and compression tools (different output path) to pass through silently.
+
+### 10. Output-to-Input Path Correlation
+
+Legitimate tools produce output files with predictable naming derived from the input:
+- `gzip`: `data.csv` → `data.csv.gz`
+- `gpg`: `secret.txt` → `secret.txt.gpg`
+- `zip`: `report.docx` → `report.zip`
+- `xz`: `dump.sql` → `dump.sql.xz`
+
+Ransomware renames to unrelated extensions: `photo.jpg` → `photo.jpg.locked`, `report.docx` → `report.docx.a1b2c3`.
+
+The detector maintains a list of known legitimate output suffixes (`.gz`, `.bz2`, `.xz`, `.zst`, `.zip`, `.gpg`, `.enc`, `.7z`, `.rar`, etc.) and checks whether a high-entropy write target is a plausible derivative of a recently-opened file. If it is, the in-place overwrite alert is suppressed.
+
+### 11. Write-Then-Delete Correlation
+
+Ransomware often follows an "encrypt copy, then delete original" pattern: write `photo.jpg.locked`, then `unlink("photo.jpg")`. Legitimate tools like `gzip` do this too, but for **one file at a time**.
+
+The detector tracks recent high-entropy write targets per PID. When an UNLINK event occurs for a file that is **not** one of the recent write targets (i.e., the original, not the encrypted copy), and the PID has written to **3 or more distinct** files recently, a critical `"Write-then-delete"` alert fires.
+
+This threshold of 3 ensures that single-file compression (`gzip data.csv` → delete `data.csv`) passes silently, while bulk encrypt-then-delete operations are caught.
+
 ### Running the Unit Tests
 
-The false-positive reduction features are covered by `tests/test_detector.py` (41 tests). Run them with:
+The false-positive reduction features are covered by `tests/test_detector.py` (113 tests). Run them with:
 
 ```bash
 python3 -m unittest tests/test_detector.py -v
@@ -152,8 +287,19 @@ python3 -m unittest tests/test_detector.py -v
 
 Test categories:
 - **TestProcessWhitelist** — verifies trusted processes are silent, unknown processes still alert, config loading, and error handling.
+- **TestBinaryHashVerification** — SHA-256 computation, matching/mismatched hashes, open trust when no hashes registered, caching, end-to-end tampered binary detection, config loading.
+- **TestProcessLineageValidation** — trusted/untrusted parent chains, empty lineage handling, caching, end-to-end untrusted lineage detection, custom parents, config loading, smoke test on real PID.
+- **TestHashAndLineageCombined** — both-pass, hash-pass/lineage-fail, hash-fail/lineage-pass, both-fail scenarios.
 - **TestCanaryFiles** — canary deployment, critical alerts on access, whitelisted-process canary access still alerts, non-canary files are not flagged.
 - **TestMagicByteAnalysis** — magic-byte identification for PDF/PNG/JPEG/ZIP, destroyed-header detection, end-to-end WRITE event triggering critical alerts.
+- **TestWriteTargetClassification** — system paths (`/dev/`, `/proc/`, `/var/lib/`) excluded, user paths (`/home/`, `/srv/`) included, end-to-end defrag and database silence.
+- **TestFileDiversityScoring** — diverse writes across directories trigger alerts, single-directory writes do not, low-entropy diverse writes do not, defragmenter repeated writes do not.
+- **TestDirectoryTraversalDetection** — scan + write triggers alert, scan-only does not, below-threshold does not, time-window expiry works.
+- **TestDefragVsRansomware** — end-to-end scenarios: block-device defrag (no alerts), single-file defrag (no alerts), multi-directory ransomware encryption (alert), scan-then-encrypt (alert), database writes (no alerts).
+- **TestInPlaceOverwriteDetection** — overwriting an opened file with high-entropy data triggers alert, writing to new files does not, low-entropy overwrites do not, legitimate .gz output does not.
+- **TestOutputPathCorrelation** — `.gz`, `.gpg`, `.xz`, `.enc`, `.zip` base-name matches are legitimate; `.locked`, random extensions, unrelated names are not.
+- **TestWriteThenUnlinkCorrelation** — writing to 3+ files then deleting a different file triggers alert, deleting own write target does not, single-file gzip pattern does not, low-entropy writes do not, time-window expiry works.
+- **TestLegitEncryptionVsRansomware** — end-to-end: gzip single file (no alerts), gpg encrypt (no alerts), zip archive (no alerts), tar|gzip pipeline (no alerts), ransomware in-place encrypt (alert), ransomware encrypt-then-delete (alert).
 - **TestEntropyCalculation** — entropy edge cases (empty, uniform, random, max).
 - **TestHighEntropyWriteDetection** — frequency + entropy burst detection regression.
 - **TestSuspiciousExtensionDetection** — OPEN/RENAME with `.locked`/`.crypto` extensions.

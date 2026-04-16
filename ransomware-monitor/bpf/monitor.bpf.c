@@ -9,7 +9,8 @@ enum event_type {
     EVENT_OPEN,
     EVENT_WRITE,
     EVENT_RENAME,
-    EVENT_UNLINK
+    EVENT_UNLINK,
+    EVENT_GETDENTS
 };
 
 struct event_t {
@@ -138,6 +139,28 @@ TRACEPOINT_PROBE(syscalls, sys_enter_unlinkat) {
     
     bpf_probe_read_user_str(&event->filename, sizeof(event->filename), args->pathname);
     
+    events.perf_submit(args, event, sizeof(*event));
+    return 0;
+}
+
+TRACEPOINT_PROBE(syscalls, sys_enter_getdents64) {
+    u32 zero = 0;
+    struct event_t *event = event_heap.lookup(&zero);
+    if (!event) return 0;
+
+    __builtin_memset(event, 0, sizeof(*event));
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    event->pid = pid_tgid >> 32;
+    event->type = EVENT_GETDENTS;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+
+    // Correlate with the last opened filename for this thread.
+    struct filename_t *fname = fd_to_filename.lookup(&pid_tgid);
+    if (fname) {
+        bpf_probe_read_kernel(&event->filename, sizeof(event->filename), fname->s);
+    }
+
     events.perf_submit(args, event, sizeof(*event));
     return 0;
 }
