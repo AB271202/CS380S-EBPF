@@ -1,4 +1,4 @@
-.PHONY: run run-verbose deps exp-run exp-metrics exp-metrics-json exp-atomic-deps exp-run-atomic-t1486-official exp-metrics-atomic-official exp-run-tuned-both clean
+.PHONY: run run-verbose deps clean mount test-entropy test-extension test-unlink exp-run exp-metrics exp-metrics-json exp-atomic-deps exp-run-atomic-t1486-official exp-metrics-atomic-official exp-run-tuned-both
 
 # eBPF programs must be loaded into the kernel as root.
 run:
@@ -6,6 +6,10 @@ run:
 
 run-verbose:
 	sudo python3 agent/main.py --verbose
+
+mount:
+	sudo mount -t debugfs debugfs /sys/kernel/debug || true
+	sudo mount -t tracefs nodev /sys/kernel/debug/tracing || true
 
 # Install system-level BCC dependencies and Python requirements.
 # Note: This assumes a Debian/Ubuntu-based system.
@@ -54,7 +58,25 @@ exp-run-tuned-both:
 	@echo "Combined Metrics"
 	python3 experiments/metrics.py --results experiments/out/tuned_combined/results.csv
 
+# --- Test Cases ---
+
+# To use these, run 'make run-verbose' in one terminal and
+# then run these targets in another.
+
+# Simulate high-entropy writes (e.g., encryption)
+test-entropy:
+	python3 tests/simulate_ransomware.py --type entropy
+
+# Simulate suspicious file extension changes
+test-extension:
+	./tests/test_extensions.sh
+
+# Simulate high-frequency unlinks
+test-unlink:
+	python3 tests/simulate_ransomware.py --type unlink
+
 # Clean up Python cache files
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+	rm -f test_data_*.bin test_file.locked important.crypto normal_file.txt

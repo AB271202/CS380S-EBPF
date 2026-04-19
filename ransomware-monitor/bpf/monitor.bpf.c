@@ -15,7 +15,8 @@ enum event_type {
     EVENT_OPEN,
     EVENT_WRITE,
     EVENT_RENAME,
-    EVENT_UNLINK
+    EVENT_UNLINK,
+    EVENT_GETDENTS
 };
 
 struct event_t {
@@ -129,7 +130,58 @@ int kprobe__ksys_write(struct pt_regs *ctx) {
     return trace_write(ctx, buf, count);
 }
 
+static __always_inline int trace_unlink(struct pt_regs *ctx, struct filename *name) {
+    struct event_t *event = get_event();
+    const char *pathname = NULL;
+    if (!event || !name) return 0;
+
+    __builtin_memset(event, 0, sizeof(*event));
+
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->type = EVENT_UNLINK;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+
+    bpf_probe_read_kernel(&pathname, sizeof(pathname), &name->name);
+    if (!pathname) {
+        return 0;
+    }
+    bpf_probe_read_kernel_str(&event->filename, sizeof(event->filename), pathname);
+
+    events.perf_submit(ctx, event, sizeof(*event));
+    return 0;
+}
+
+static __always_inline int trace_getdents(struct pt_regs *ctx) {
+    struct event_t *event = get_event();
+    if (!event) return 0;
+
+    __builtin_memset(event, 0, sizeof(*event));
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    event->pid = pid_tgid >> 32;
+    event->type = EVENT_GETDENTS;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+
+    // Correlate with the last opened filename for this thread.
+    struct filename_t *fname = fd_to_filename.lookup(&pid_tgid);
+    if (fname) {
+        bpf_probe_read_kernel(&event->filename, sizeof(event->filename), fname->s);
+    }
+
+    events.perf_submit(ctx, event, sizeof(*event));
+    return 0;
+}
+
 int kprobe__do_renameat2(struct pt_regs *ctx) {
     const char *newname = (const char *)PT_REGS_PARM4(ctx);
     return trace_rename(ctx, newname);
+}
+
+int kprobe__do_unlinkat(struct pt_regs *ctx) {
+    struct filename *name = (struct filename *)PT_REGS_PARM2(ctx);
+    return trace_unlink(ctx, name);
+}
+
+int kprobe__iterate_dir(struct pt_regs *ctx) {
+    return trace_getdents(ctx);
 }

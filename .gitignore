@@ -1,2 +1,10 @@
 *.o
 __*
+out.txt
+.*
+*.aux
+*.fdb*
+*.fls
+*.log
+*.out
+*.synctex.gz

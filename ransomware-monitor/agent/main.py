@@ -12,7 +12,8 @@ EVENT_TYPES = {
     0: "OPEN",
     1: "WRITE",
     2: "RENAME",
-    3: "UNLINK"
+    3: "UNLINK",
+    4: "GETDENTS"
 }
 
 DEFAULT_PERF_PAGE_CNT = 4096
