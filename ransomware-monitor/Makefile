@@ -1,6 +1,13 @@
-.PHONY: run run-verbose deps clean mount test-entropy test-extension test-unlink exp-run exp-metrics exp-metrics-json exp-atomic-deps exp-benign-deps exp-run-atomic-t1486-official exp-metrics-atomic-official exp-run-benign-stress exp-metrics-benign-stress exp-run-tuned-benign-stress exp-metrics-tuned-benign-stress exp-run-tuned-both exp-run-tuned-all
+.PHONY: run run-verbose deps clean mount test-entropy test-extension test-unlink \
+       exp-run exp-metrics exp-metrics-json exp-atomic-deps exp-benign-deps \
+       exp-run-atomic exp-metrics-atomic exp-run-benign exp-metrics-benign \
+       exp-run-tuned-all unit-test
 
-# eBPF programs must be loaded into the kernel as root.
+# --- Tuned threshold overrides (used by exp-run-tuned-*) ---
+TUNED_ENV = THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0
+
+# --- Core targets ---
+
 run:
 	sudo python3 agent/main.py
 
@@ -11,106 +18,91 @@ mount:
 	sudo mount -t debugfs debugfs /sys/kernel/debug || true
 	sudo mount -t tracefs nodev /sys/kernel/debug/tracing || true
 
-# Install system-level BCC dependencies and Python requirements.
-# Note: This assumes a Debian/Ubuntu-based system.
+unit-test:
+	python3 -m unittest tests/test_detector.py -v
+
 deps:
 	sudo apt-get update
-	if grep -qi microsoft /proc/version; then \
-		echo "WSL detected: skipping linux-headers-$$(uname -r) from apt."; \
-		echo "Use WSL2 kernel source + modules_prepare for matching build headers."; \
+	@if grep -qi microsoft /proc/version 2>/dev/null; then \
+		echo "WSL detected: skipping linux-headers from apt."; \
 		sudo apt-get install -y bpfcc-tools python3-bpfcc python3-pip; \
 	else \
 		sudo apt-get install -y bpfcc-tools linux-headers-$$(uname -r) python3-bpfcc python3-pip; \
 	fi
 	python3 -m pip install -r requirements.txt
 
+exp-atomic-deps:
+	sudo apt-get update && sudo apt-get install -y gnupg p7zip-full ccrypt openssl
+
+exp-benign-deps:
+	sudo apt-get update && sudo apt-get install -y zstd ffmpeg
+
+# --- Manual test targets (run alongside 'make run-verbose') ---
+
+test-entropy:
+	python3 tests/simulate_ransomware.py --type entropy
+
+test-extension:
+	./tests/test_extensions.sh
+
+test-unlink:
+	python3 tests/simulate_ransomware.py --type unlink
+
+# --- Experiment suite targets ---
+
 exp-run:
-	sudo -E python3 experiments/run_experiments.py --scenarios experiments/scenarios.csv --output-dir experiments/out/latest --repeats 3
+	sudo -E python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios.csv \
+		--output-dir experiments/out/latest --repeats 3
 
 exp-metrics:
 	python3 experiments/metrics.py --results experiments/out/latest/results.csv
 
 exp-metrics-json:
-	python3 experiments/metrics.py --results experiments/out/latest/results.csv --json-out experiments/out/latest/metrics.json
+	python3 experiments/metrics.py --results experiments/out/latest/results.csv \
+		--json-out experiments/out/latest/metrics.json
 
-exp-atomic-deps:
-	sudo apt-get update
-	sudo apt-get install -y gnupg p7zip-full ccrypt openssl
+exp-run-atomic:
+	sudo -E python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios_atomic_t1486_official.csv \
+		--output-dir experiments/out/atomic_t1486_official --repeats 3
 
-exp-benign-deps:
-	sudo apt-get update
-	sudo apt-get install -y zstd ffmpeg
-
-exp-run-atomic-t1486-official:
-	sudo -E python3 experiments/run_experiments.py --scenarios experiments/scenarios_atomic_t1486_official.csv --output-dir experiments/out/atomic_t1486_official --repeats 3
-
-exp-metrics-atomic-official:
+exp-metrics-atomic:
 	python3 experiments/metrics.py --results experiments/out/atomic_t1486_official/results.csv
 
-exp-run-benign-stress:
-	sudo -E python3 experiments/run_experiments.py --scenarios experiments/scenarios_benign_stress.csv --output-dir experiments/out/benign_stress --repeats 3
+exp-run-benign:
+	sudo -E python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios_benign_stress.csv \
+		--output-dir experiments/out/benign_stress --repeats 3
 
-exp-metrics-benign-stress:
+exp-metrics-benign:
 	python3 experiments/metrics.py --results experiments/out/benign_stress/results.csv
 
-exp-run-tuned-benign-stress:
-	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios_benign_stress.csv --output-dir experiments/out/benign_stress_tuned --repeats 3
-
-exp-metrics-tuned-benign-stress:
-	python3 experiments/metrics.py --results experiments/out/benign_stress_tuned/results.csv
-
-exp-run-tuned-both:
-	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios.csv --output-dir experiments/out/legacy_tuned --repeats 3
-	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios_atomic_t1486_official.csv --output-dir experiments/out/atomic_t1486_official_tuned --repeats 3
-	sudo -E python3 experiments/combine_results.py --output experiments/out/tuned_combined/results.csv experiments/out/legacy_tuned/results.csv experiments/out/atomic_t1486_official_tuned/results.csv
-	sudo chown -R $$(id -u):$$(id -g) experiments/out/tuned_combined
-	@echo ""
-	@echo "Legacy Metrics"
-	python3 experiments/metrics.py --results experiments/out/legacy_tuned/results.csv
-	@echo ""
-	@echo "Official Atomic Metrics"
-	python3 experiments/metrics.py --results experiments/out/atomic_t1486_official_tuned/results.csv
-	@echo ""
-	@echo "Combined Metrics"
-	python3 experiments/metrics.py --results experiments/out/tuned_combined/results.csv
+# --- Tuned runs (all suites with optimized thresholds) ---
 
 exp-run-tuned-all:
-	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios.csv --output-dir experiments/out/legacy_tuned --repeats 3
-	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios_atomic_t1486_official.csv --output-dir experiments/out/atomic_t1486_official_tuned --repeats 3
-	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios_benign_stress.csv --output-dir experiments/out/benign_stress_tuned --repeats 3
-	sudo -E python3 experiments/combine_results.py --output experiments/out/tuned_all/results.csv experiments/out/legacy_tuned/results.csv experiments/out/atomic_t1486_official_tuned/results.csv experiments/out/benign_stress_tuned/results.csv
+	sudo -E $(TUNED_ENV) python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios.csv \
+		--output-dir experiments/out/legacy_tuned --repeats 3
+	sudo -E $(TUNED_ENV) python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios_atomic_t1486_official.csv \
+		--output-dir experiments/out/atomic_tuned --repeats 3
+	sudo -E $(TUNED_ENV) python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios_benign_stress.csv \
+		--output-dir experiments/out/benign_tuned --repeats 3
+	sudo -E python3 experiments/combine_results.py \
+		--output experiments/out/tuned_all/results.csv \
+		experiments/out/legacy_tuned/results.csv \
+		experiments/out/atomic_tuned/results.csv \
+		experiments/out/benign_tuned/results.csv
 	sudo chown -R $$(id -u):$$(id -g) experiments/out/tuned_all
-	@echo ""
-	@echo "=== Legacy Metrics ==="
-	python3 experiments/metrics.py --results experiments/out/legacy_tuned/results.csv
-	@echo ""
-	@echo "=== Official Atomic Metrics ==="
-	python3 experiments/metrics.py --results experiments/out/atomic_t1486_official_tuned/results.csv
-	@echo ""
-	@echo "=== Benign Stress Metrics ==="
-	python3 experiments/metrics.py --results experiments/out/benign_stress_tuned/results.csv
-	@echo ""
-	@echo "=== Combined Metrics ==="
-	python3 experiments/metrics.py --results experiments/out/tuned_all/results.csv
+	@echo "\n=== Legacy ===" && python3 experiments/metrics.py --results experiments/out/legacy_tuned/results.csv
+	@echo "\n=== Atomic ===" && python3 experiments/metrics.py --results experiments/out/atomic_tuned/results.csv
+	@echo "\n=== Benign ===" && python3 experiments/metrics.py --results experiments/out/benign_tuned/results.csv
+	@echo "\n=== Combined ===" && python3 experiments/metrics.py --results experiments/out/tuned_all/results.csv
 
-# --- Test Cases ---
+# --- Cleanup ---
 
-# To use these, run 'make run-verbose' in one terminal and
-# then run these targets in another.
-
-# Simulate high-entropy writes (e.g., encryption)
-test-entropy:
-	python3 tests/simulate_ransomware.py --type entropy
-
-# Simulate suspicious file extension changes
-test-extension:
-	./tests/test_extensions.sh
-
-# Simulate high-frequency unlinks
-test-unlink:
-	python3 tests/simulate_ransomware.py --type unlink
-
-# Clean up Python cache files
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete

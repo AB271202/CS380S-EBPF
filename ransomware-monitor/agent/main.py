@@ -25,6 +25,29 @@ def main():
         action="store_true",
         help="Print every traced filesystem event",
     )
+    parser.add_argument(
+        "--action-mode",
+        choices=["simulate", "suspend", "kill"],
+        default="simulate",
+        help="Response mode: simulate (log only), suspend (SIGSTOP), kill (full EDR chain)",
+    )
+    parser.add_argument(
+        "--snapshot-cmd",
+        type=str,
+        default=None,
+        help="Shell command for filesystem snapshot on critical alert",
+    )
+    parser.add_argument(
+        "--quarantine-dir",
+        type=str,
+        default=None,
+        help="Directory to quarantine malicious binaries (default: /var/lib/ransomware-monitor/quarantine)",
+    )
+    parser.add_argument(
+        "--enable-network-isolation",
+        action="store_true",
+        help="Block network access for flagged processes via iptables",
+    )
     args = parser.parse_args()
 
     if os.geteuid() != 0:
@@ -43,7 +66,12 @@ def main():
         print(f"Failed to load BPF program: {e}")
         sys.exit(1)
 
-    detector = RansomwareDetector()
+    detector = RansomwareDetector(
+        action_mode=args.action_mode,
+        snapshot_cmd=args.snapshot_cmd,
+        quarantine_dir=args.quarantine_dir,
+        enable_network_isolation=args.enable_network_isolation,
+    )
 
     def print_event(cpu, data, size):
         event = b["events"].event(data)
@@ -71,8 +99,8 @@ def main():
     
     mode = "verbose" if args.verbose else "alert-only"
     print(
-        f"Ransomware monitor started ({mode} mode, perf pages={page_cnt}). "
-        "Press Ctrl+C to stop."
+        f"Ransomware monitor started ({mode} mode, action={args.action_mode}, "
+        f"perf pages={page_cnt}). Press Ctrl+C to stop."
     )
 
     def signal_handler(sig, frame):

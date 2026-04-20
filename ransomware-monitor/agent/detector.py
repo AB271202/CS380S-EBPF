@@ -1,7 +1,12 @@
 import math
 import collections
 import hashlib
+import logging
 import os
+import shutil
+import signal as signal_mod
+import stat
+import subprocess
 import time
 import json
 
@@ -140,6 +145,10 @@ class RansomwareDetector:
         threshold_unique_files=None,
         threshold_unique_dirs=None,
         threshold_dir_scans=None,
+        action_mode="simulate",
+        snapshot_cmd=None,
+        quarantine_dir=None,
+        enable_network_isolation=False,
     ):
         # Tune defaults for 128-byte write samples from eBPF.
         self.threshold_entropy = float(
@@ -210,8 +219,6 @@ class RansomwareDetector:
 
         # 1. Process whitelist
         self.whitelisted_processes = set(DEFAULT_WHITELISTED_PROCESSES)
-        if whitelist_config:
-            self._load_whitelist(whitelist_config)
 
         # 2. Canary files
         self.canary_paths: set[str] = set()
@@ -221,16 +228,12 @@ class RansomwareDetector:
 
         # 3. Binary hash verification
         self.verify_binary_hash = verify_binary_hash
-        # trusted_hashes: { "/usr/bin/gcc": {"sha256_1", "sha256_2"}, ... }
         self.trusted_hashes: dict[str, set[str]] = {}
         if trusted_hashes:
             for path, hashes in trusted_hashes.items():
                 if isinstance(hashes, str):
                     hashes = [hashes]
                 self.trusted_hashes[path] = set(hashes)
-        if whitelist_config:
-            self._load_trusted_hashes(whitelist_config)
-        # Cache: { (pid, exe_path): hash_str }
         self._hash_cache: dict[tuple[int, str], str] = {}
 
         # 4. Process lineage validation
@@ -244,60 +247,56 @@ class RansomwareDetector:
             "screen", "tmux",
             "docker", "containerd", "containerd-shim",
         }
-        if whitelist_config:
-            self._load_trusted_parents(whitelist_config)
-        # Cache: { pid: bool } — True means lineage was validated OK
         self._lineage_cache: dict[int, bool] = {}
+
+        # Load all config from a single file (whitelist, hashes, parents)
+        if whitelist_config:
+            self._load_config(whitelist_config)
 
         # Alerts list – useful for programmatic inspection in tests.
         self.alerts: list[dict] = []
+
+        # --- Response configuration ---
+        # "simulate" = log only, "suspend" = SIGSTOP, "kill" = full EDR chain
+        self.action_mode = action_mode
+        self.snapshot_cmd = snapshot_cmd
+        self._snapshot_triggered = False
+        self.quarantine_dir = quarantine_dir or "/var/lib/ransomware-monitor/quarantine"
+        self.enable_network_isolation = enable_network_isolation
+        # Track quarantined binaries for the blocklist
+        self.blocklist: set[str] = set()
+        # Track files modified by flagged PIDs for remediation
+        self._pid_modified_files: dict[int, list[str]] = collections.defaultdict(list)
 
     # ------------------------------------------------------------------
     # Whitelist helpers
     # ------------------------------------------------------------------
 
-    def _load_whitelist(self, config_path):
-        """Merge additional process names from a JSON config file.
+    def _load_config(self, config_path):
+        """Load all configuration from a single JSON file.
 
         Expected format::
 
             {
                 "whitelisted_processes": ["mybackup", "custom-tool"],
-                "trusted_hashes": {
-                    "/usr/bin/mybackup": ["sha256_digest_1"]
-                },
+                "trusted_hashes": {"/usr/bin/mybackup": ["sha256_digest"]},
                 "trusted_parents": ["orchestrator"]
             }
         """
         try:
             with open(config_path, "r") as fh:
                 cfg = json.load(fh)
-            extra = cfg.get("whitelisted_processes", [])
-            self.whitelisted_processes.update(extra)
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"[WARN] Could not load whitelist config {config_path}: {exc}")
+            print(f"[WARN] Could not load config {config_path}: {exc}")
+            return
 
-    def _load_trusted_hashes(self, config_path):
-        """Load trusted binary hashes from the same config file."""
-        try:
-            with open(config_path, "r") as fh:
-                cfg = json.load(fh)
-            for exe_path, hashes in cfg.get("trusted_hashes", {}).items():
-                if isinstance(hashes, str):
-                    hashes = [hashes]
-                self.trusted_hashes.setdefault(exe_path, set()).update(hashes)
-        except (OSError, json.JSONDecodeError):
-            pass  # Already warned in _load_whitelist
+        self.whitelisted_processes.update(cfg.get("whitelisted_processes", []))
+        self.trusted_parents.update(cfg.get("trusted_parents", []))
 
-    def _load_trusted_parents(self, config_path):
-        """Load additional trusted parent process names from config."""
-        try:
-            with open(config_path, "r") as fh:
-                cfg = json.load(fh)
-            extra = cfg.get("trusted_parents", [])
-            self.trusted_parents.update(extra)
-        except (OSError, json.JSONDecodeError):
-            pass  # Already warned in _load_whitelist
+        for exe_path, hashes in cfg.get("trusted_hashes", {}).items():
+            if isinstance(hashes, str):
+                hashes = [hashes]
+            self.trusted_hashes.setdefault(exe_path, set()).update(hashes)
 
     def is_whitelisted(self, comm, pid=None):
         """Return True if *comm* is in the trusted process whitelist.
@@ -784,69 +783,54 @@ class RansomwareDetector:
             buffer_bytes = bytes(event.buffer[:sample_len])
             entropy = self.calculate_entropy(buffer_bytes)
             self.process_stats[pid].append((now, entropy, filename))
+            self._pid_modified_files[pid].append(filename)
 
             # Clean up old events outside the time window
             self.process_stats[pid] = [
                 e for e in self.process_stats[pid] if now - e[0] <= self.time_window
             ]
 
-            # --- Magic-byte analysis (false-positive reduction) ---
-            # Only flag "magic bytes destroyed" when the write targets a
-            # file the process previously opened (in-place overwrite of an
-            # existing file).  Writing high-entropy data to a *new* output
-            # file (e.g. gpg writing passwd.gpg) is normal for compression
-            # and encryption tools.
+            # --- Magic-byte and in-place overwrite checks ---
+            # Both require multi-file in-place overwrites to fire (single-
+            # file encryption like ccencrypt is legitimate).
             is_overwrite = self.is_in_place_overwrite(pid, filename)
-            if (
-                self.magic_bytes_destroyed(buffer_bytes, entropy)
-                and is_overwrite
-            ):
-                # Count how many distinct files this PID has overwritten
-                # in-place with high entropy in the current window.
-                # A single in-place encryption (e.g. ccencrypt on one
-                # file) is legitimate.  Ransomware does it to many files.
-                overwritten_files = {
+            overwritten_count = 0
+            if is_overwrite and entropy > self.threshold_entropy:
+                overwritten_count = len({
                     e[2] for e in self.process_stats[pid]
                     if e[1] > self.threshold_entropy
                     and self.is_in_place_overwrite(pid, e[2])
-                }
-                if len(overwritten_files) >= 2:
+                })
+
+            if (
+                self.magic_bytes_destroyed(buffer_bytes, entropy)
+                and is_overwrite
+                and overwritten_count >= 2
+            ):
+                print(
+                    f"[!!!] ALERT: File header overwritten with encrypted data "
+                    f"by {comm} (PID {pid}) on '{filename}' "
+                    f"(entropy {entropy:.2f})"
+                )
+                self._record_alert(
+                    pid, comm, "Magic bytes destroyed",
+                    severity="critical", entropy=entropy, filename=filename,
+                )
+                self.take_action(pid, comm, "Magic bytes destroyed")
+
+            if is_overwrite and entropy > self.threshold_entropy and overwritten_count >= 2:
+                opened_files = list(self.open_tracker.get(pid, {}).keys())
+                if not self.is_legitimate_output_name(filename, opened_files):
                     print(
-                        f"[!!!] ALERT: File header overwritten with encrypted data "
-                        f"by {comm} (PID {pid}) on '{filename}' "
+                        f"[!!!] ALERT: In-place overwrite of '{filename}' "
+                        f"with high-entropy data by {comm} (PID {pid}) "
                         f"(entropy {entropy:.2f})"
                     )
                     self._record_alert(
-                        pid, comm, "Magic bytes destroyed",
+                        pid, comm, "In-place overwrite",
                         severity="critical", entropy=entropy, filename=filename,
                     )
-                    self.take_action(pid, comm, "Magic bytes destroyed")
-                    # Do NOT return — fall through to diversity and frequency
-                    # checks so that multi-signal alerts accumulate.
-
-            # --- In-place overwrite detection ---
-            if is_overwrite and entropy > self.threshold_entropy:
-                # Check if the output name is a legitimate derivative.
-                opened_files = list(self.open_tracker.get(pid, {}).keys())
-                if not self.is_legitimate_output_name(filename, opened_files):
-                    # Same multi-file gate: single-file in-place encryption
-                    # is legitimate (ccencrypt, gpg --symmetric on one file).
-                    overwritten_files = {
-                        e[2] for e in self.process_stats[pid]
-                        if e[1] > self.threshold_entropy
-                        and self.is_in_place_overwrite(pid, e[2])
-                    }
-                    if len(overwritten_files) >= 2:
-                        print(
-                            f"[!!!] ALERT: In-place overwrite of '{filename}' "
-                            f"with high-entropy data by {comm} (PID {pid}) "
-                            f"(entropy {entropy:.2f})"
-                        )
-                        self._record_alert(
-                            pid, comm, "In-place overwrite",
-                            severity="critical", entropy=entropy, filename=filename,
-                        )
-                        self.take_action(pid, comm, "In-place overwrite")
+                    self.take_action(pid, comm, "In-place overwrite")
 
             # Track this write for unlink correlation.
             if entropy > self.threshold_entropy:
@@ -975,15 +959,221 @@ class RansomwareDetector:
                 )
                 self.take_action(pid, comm, "Directory traversal + Writes")
 
+    # ------------------------------------------------------------------
+    # EDR Response Chain
+    # ------------------------------------------------------------------
+
     def take_action(self, pid, comm, reason):
+        """Execute the graduated EDR response chain.
+
+        The six steps mirror production AV/EDR tools:
+        1. Process Kill — terminate the process tree
+        2. Quarantine — move the binary to a secure location
+        3. Network Isolation — block the PID's network access
+        4. Remediation — log modified files for recovery
+        5. Rollback — trigger a filesystem snapshot
+        6. Binary Hardening — strip exec bit, add to blocklist
+
+        In ``simulate`` mode, all steps are logged but not executed.
+        In ``suspend`` mode, only step 1 uses SIGSTOP instead of SIGKILL.
+        In ``kill`` mode, the full chain executes.
+        """
+        severity = "unknown"
+        for a in reversed(self.alerts):
+            if a.get("pid") == pid:
+                severity = a.get("severity", "unknown")
+                break
+
         print(
-            f"[X] ACTION: Terminating process {comm} (PID {pid}) "
-            f"due to {reason}..."
+            f"[X] ACTION ({self.action_mode}): {comm} (PID {pid}) — "
+            f"{reason} [severity={severity}]"
         )
+
+        if self.action_mode == "simulate":
+            print(f"      [simulate] Would execute full EDR chain for PID {pid}")
+            return
+
+        # --- Step 1: Process Kill / Suspend ---
+        self._step_kill_process(pid, comm)
+
+        # --- Step 2: Quarantine the binary ---
+        exe_path = self._resolve_exe(pid)
+        quarantined_path = self._step_quarantine(pid, comm, exe_path)
+
+        # --- Step 3: Network Isolation ---
+        self._step_network_isolate(pid, comm)
+
+        # --- Step 4: Remediation (log modified files) ---
+        self._step_remediate(pid, comm)
+
+        # --- Step 5: Rollback (filesystem snapshot) ---
+        if severity == "critical":
+            self._step_rollback(pid, comm)
+
+        # --- Step 6: Binary Hardening ---
+        self._step_harden_binary(pid, comm, exe_path, quarantined_path)
+
+    def _step_kill_process(self, pid, comm):
+        """Step 1: Kill or suspend the process and its children."""
+        sig = signal_mod.SIGSTOP if self.action_mode == "suspend" else signal_mod.SIGKILL
+        sig_name = "SIGSTOP" if self.action_mode == "suspend" else "SIGKILL"
+
+        # Kill children first (best-effort via /proc/<pid>/task/*/children)
+        children = self._get_child_pids(pid)
+        for cpid in children:
+            try:
+                os.kill(cpid, sig)
+                print(f"      [step1] Sent {sig_name} to child PID {cpid}")
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        # Kill the main process
         try:
-            # os.kill(pid, 9)  # Commented out for safety during testing
-            print(f"      (Simulation) Sent SIGKILL to PID {pid}")
-        except ProcessLookupError as exc:
-            print(f"      ProcessLookupError: {exc}")
+            os.kill(pid, sig)
+            print(f"      [step1] Sent {sig_name} to PID {pid} ({comm})")
+        except ProcessLookupError:
+            print(f"      [step1] PID {pid} already exited")
+        except PermissionError:
+            print(f"      [step1] Permission denied for PID {pid}")
         except Exception as exc:
-            print(f"      Error terminating process: {exc}")
+            print(f"      [step1] Error signaling PID {pid}: {exc}")
+
+    @staticmethod
+    def _get_child_pids(pid):
+        """Return a list of child PIDs for *pid* via /proc."""
+        children = []
+        try:
+            children_path = f"/proc/{pid}/task/{pid}/children"
+            with open(children_path, "r") as fh:
+                children = [int(p) for p in fh.read().split() if p.strip()]
+        except (OSError, ValueError):
+            pass
+        return children
+
+    def _step_quarantine(self, pid, comm, exe_path):
+        """Step 2: Move the offending binary to the quarantine directory.
+
+        Returns the quarantined path, or None if quarantine failed.
+        """
+        if not exe_path or not os.path.isfile(exe_path):
+            print(f"      [step2] Cannot quarantine: binary not found for PID {pid}")
+            return None
+
+        try:
+            os.makedirs(self.quarantine_dir, exist_ok=True)
+            quarantined = os.path.join(
+                self.quarantine_dir,
+                f"{comm}_{pid}_{int(time.time())}_{os.path.basename(exe_path)}",
+            )
+            shutil.copy2(exe_path, quarantined)
+            # Strip all permission bits from the quarantined copy
+            os.chmod(quarantined, 0o000)
+            print(f"      [step2] Quarantined {exe_path} → {quarantined}")
+            return quarantined
+        except (OSError, shutil.Error) as exc:
+            print(f"      [step2] Quarantine failed for {exe_path}: {exc}")
+            return None
+
+    def _step_network_isolate(self, pid, comm):
+        """Step 3: Block network access for the offending process via iptables.
+
+        Uses the owner match module to drop all outbound packets from the
+        process's UID.  This prevents C2 communication and data exfiltration.
+        """
+        if not self.enable_network_isolation:
+            print(f"      [step3] Network isolation disabled (use --enable-network-isolation)")
+            return
+
+        # Get the UID of the process
+        uid = self._get_pid_uid(pid)
+        if uid is None:
+            print(f"      [step3] Cannot determine UID for PID {pid}")
+            return
+
+        try:
+            # Block outbound traffic from this UID
+            subprocess.run(
+                [
+                    "iptables", "-A", "OUTPUT",
+                    "-m", "owner", "--uid-owner", str(uid),
+                    "-j", "DROP",
+                ],
+                capture_output=True, text=True, timeout=5,
+            )
+            print(f"      [step3] Blocked outbound traffic for UID {uid} (PID {pid})")
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            print(f"      [step3] Network isolation failed: {exc}")
+
+    @staticmethod
+    def _get_pid_uid(pid):
+        """Read the real UID of *pid* from /proc/<pid>/status."""
+        try:
+            with open(f"/proc/{pid}/status", "r") as fh:
+                for line in fh:
+                    if line.startswith("Uid:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
+
+    def _step_remediate(self, pid, comm):
+        """Step 4: Log all files modified by the flagged process.
+
+        In a full implementation this would revert changes (restore from
+        backup, undo renames).  Currently we log the list for manual or
+        automated recovery.
+        """
+        modified = self._pid_modified_files.get(pid, [])
+        if not modified:
+            print(f"      [step4] No tracked file modifications for PID {pid}")
+            return
+
+        unique_files = list(dict.fromkeys(modified))  # Deduplicate, preserve order
+        print(f"      [step4] {len(unique_files)} files modified by {comm} (PID {pid}):")
+        for f in unique_files[:20]:  # Print first 20
+            print(f"              - {f}")
+        if len(unique_files) > 20:
+            print(f"              ... and {len(unique_files) - 20} more")
+
+    def _step_rollback(self, pid, comm):
+        """Step 5: Trigger a filesystem snapshot for rollback."""
+        if not self.snapshot_cmd:
+            print(f"      [step5] No snapshot command configured (use --snapshot-cmd)")
+            return
+
+        if self._snapshot_triggered:
+            print(f"      [step5] Snapshot already triggered this session")
+            return
+
+        self._snapshot_triggered = True
+        print(f"      [step5] Running snapshot: {self.snapshot_cmd}")
+        try:
+            result = subprocess.run(
+                self.snapshot_cmd, shell=True, timeout=30,
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                print(f"      [step5] Snapshot created successfully")
+            else:
+                print(f"      [step5] Snapshot command exited with code {result.returncode}")
+                if result.stderr:
+                    print(f"              stderr: {result.stderr.strip()}")
+        except subprocess.TimeoutExpired:
+            print(f"      [step5] Snapshot command timed out")
+        except Exception as exc:
+            print(f"      [step5] Snapshot failed: {exc}")
+
+    def _step_harden_binary(self, pid, comm, exe_path, quarantined_path):
+        """Step 6: Strip execute permission and add to persistent blocklist."""
+        if exe_path and os.path.isfile(exe_path):
+            try:
+                current = os.stat(exe_path).st_mode
+                os.chmod(exe_path, current & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+                print(f"      [step6] Stripped exec bit from {exe_path}")
+            except OSError as exc:
+                print(f"      [step6] Cannot strip exec bit from {exe_path}: {exc}")
+
+        # Add to persistent blocklist
+        if exe_path:
+            self.blocklist.add(exe_path)
+            print(f"      [step6] Added {exe_path} to blocklist ({len(self.blocklist)} entries)")
