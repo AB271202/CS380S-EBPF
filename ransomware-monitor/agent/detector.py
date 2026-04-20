@@ -213,7 +213,7 @@ class RansomwareDetector:
         # Tracks recent high-entropy write targets for unlink correlation.
         self.write_targets: dict[int, list[tuple[float, str]]] = collections.defaultdict(list)
         self.suspicious_extensions = {
-            ".locked", ".crypto", ".encrypted", ".onion", ".lck", ".temp",
+            ".locked", ".crypto", ".encrypted", ".onion", ".lck", ".temp", ".cl0p",
         }
 
         # --- Cumulative per-process profile (slow-burn detection) ---

@@ -1,0 +1,6 @@
+id,label,source,variant,family,expected_comm,command,notes
+pos_ransim_walk,positive,behavioral,walk,ransomexx,ransim_walk,python3 "$REPO_ROOT/experiments/workloads/ransim_walk.py",Directory-walk encryptor (RansomEXX pattern) - exercises file diversity + entropy and directory traversal
+pos_ransim_del,positive,behavioral,delete,hellokitty,ransim_del,python3 "$REPO_ROOT/experiments/workloads/ransim_del.py",Encrypt-then-delete (HelloKitty pattern) - exercises write-then-delete correlation
+pos_ransim_rename,positive,behavioral,rename,cl0p,ransim_ren,python3 "$REPO_ROOT/experiments/workloads/ransim_rename.py",In-place overwrite + rename (Cl0p pattern) - exercises suspicious rename + diversity
+pos_ransim_slow,positive,behavioral,throttled,evasion,ransim_slw,python3 "$REPO_ROOT/experiments/workloads/ransim_slow.py",Throttled encryption (evasion test) - tests sliding window limits
+pos_ransim_delegate,positive,behavioral,delegate,delegated,ransim_dlg,python3 "$REPO_ROOT/experiments/workloads/ransim_delegate.py",Delegated per-file encryption via ccencrypt child process - tests cross-PID correlation gap

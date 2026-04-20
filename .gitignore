@@ -9,3 +9,11 @@ out.txt
 *.out
 *.synctex.gz
 ./WSL2-Linux-Kernel
+
+# Generated experiment outputs from local reruns
+ransomware-monitor/experiments/out/legacy_tuned/
+ransomware-monitor/experiments/out/atomic_tuned/
+ransomware-monitor/experiments/out/benign_tuned/
+ransomware-monitor/experiments/out/behavioral/
+ransomware-monitor/experiments/out/behavioral_tuned/
+ransomware-monitor/experiments/out/tuned_all/

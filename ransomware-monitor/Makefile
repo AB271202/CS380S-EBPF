@@ -1,7 +1,8 @@
 .PHONY: run run-verbose deps clean mount test-entropy test-extension test-unlink \
        exp-run exp-metrics exp-metrics-json exp-atomic-deps exp-benign-deps \
        exp-run-atomic exp-metrics-atomic exp-run-benign exp-metrics-benign \
-       exp-run-tuned-all unit-test
+       exp-run-behavioral exp-metrics-behavioral exp-run-tuned-behavioral \
+       exp-metrics-tuned-behavioral exp-run-tuned-all unit-test
 
 # --- Tuned threshold overrides (used by exp-run-tuned-*) ---
 TUNED_ENV = THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0
@@ -78,6 +79,22 @@ exp-run-benign:
 exp-metrics-benign:
 	python3 experiments/metrics.py --results experiments/out/benign_stress/results.csv
 
+exp-run-behavioral:
+	sudo -E python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios_behavioral.csv \
+		--output-dir experiments/out/behavioral --repeats 3
+
+exp-metrics-behavioral:
+	python3 experiments/metrics.py --results experiments/out/behavioral/results.csv
+
+exp-run-tuned-behavioral:
+	sudo -E $(TUNED_ENV) python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios_behavioral.csv \
+		--output-dir experiments/out/behavioral_tuned --repeats 3
+
+exp-metrics-tuned-behavioral:
+	python3 experiments/metrics.py --results experiments/out/behavioral_tuned/results.csv
+
 # --- Tuned runs (all suites with optimized thresholds) ---
 
 exp-run-tuned-all:
@@ -90,15 +107,20 @@ exp-run-tuned-all:
 	sudo -E $(TUNED_ENV) python3 experiments/run_experiments.py \
 		--scenarios experiments/scenarios_benign_stress.csv \
 		--output-dir experiments/out/benign_tuned --repeats 3
+	sudo -E $(TUNED_ENV) python3 experiments/run_experiments.py \
+		--scenarios experiments/scenarios_behavioral.csv \
+		--output-dir experiments/out/behavioral_tuned --repeats 3
 	sudo -E python3 experiments/combine_results.py \
 		--output experiments/out/tuned_all/results.csv \
 		experiments/out/legacy_tuned/results.csv \
 		experiments/out/atomic_tuned/results.csv \
-		experiments/out/benign_tuned/results.csv
+		experiments/out/benign_tuned/results.csv \
+		experiments/out/behavioral_tuned/results.csv
 	sudo chown -R $$(id -u):$$(id -g) experiments/out/tuned_all
 	@echo "\n=== Legacy ===" && python3 experiments/metrics.py --results experiments/out/legacy_tuned/results.csv
 	@echo "\n=== Atomic ===" && python3 experiments/metrics.py --results experiments/out/atomic_tuned/results.csv
 	@echo "\n=== Benign ===" && python3 experiments/metrics.py --results experiments/out/benign_tuned/results.csv
+	@echo "\n=== Behavioral ===" && python3 experiments/metrics.py --results experiments/out/behavioral_tuned/results.csv
 	@echo "\n=== Combined ===" && python3 experiments/metrics.py --results experiments/out/tuned_all/results.csv
 
 # --- Cleanup ---
