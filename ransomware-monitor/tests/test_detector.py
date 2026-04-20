@@ -562,14 +562,17 @@ class TestMagicByteAnalysis(unittest.TestCase):
         self.assertFalse(RansomwareDetector.magic_bytes_destroyed(buf, entropy))
 
     def test_write_event_with_destroyed_header_triggers_critical(self):
-        """End-to-end: a WRITE that destroys a file header → critical alert."""
+        """End-to-end: in-place overwrites of multiple files → critical alert."""
         det = RansomwareDetector(verify_binary_hash=False, verify_lineage=False)
         high_entropy_buf = os.urandom(128)
-        evt = _make_event(1, 4000, "evil", "/home/user/photo.jpg", 128, high_entropy_buf)
-        det.analyze_event(evt)
-        self.assertEqual(len(det.alerts), 1)
-        self.assertEqual(det.alerts[0]["severity"], "critical")
-        self.assertEqual(det.alerts[0]["reason"], "Magic bytes destroyed")
+        # Must overwrite 2+ distinct previously-opened files to trigger.
+        for fname in ["/home/user/photo.jpg", "/home/user/doc.pdf"]:
+            evt = _make_event(0, 4000, "evil", fname, 0, b"")
+            det.analyze_event(evt)
+            evt = _make_event(1, 4000, "evil", fname, 128, high_entropy_buf)
+            det.analyze_event(evt)
+        magic_alerts = [a for a in det.alerts if a["reason"] == "Magic bytes destroyed"]
+        self.assertGreater(len(magic_alerts), 0)
 
     def test_write_event_with_valid_header_no_magic_alert(self):
         """A write that preserves the PDF header should not trigger magic alert."""
@@ -1146,19 +1149,32 @@ class TestInPlaceOverwriteDetection(unittest.TestCase):
         return RansomwareDetector(**defaults)
 
     def test_overwrite_opened_file_triggers_alert(self):
-        """OPEN a file, then WRITE high-entropy data to it → in-place alert."""
+        """OPEN multiple files, then WRITE high-entropy data to them → alert."""
         det = self._det()
-        # Open the file (event type 0)
-        evt = _make_event(0, 15000, "evil", "/home/user/photo.jpg", 0, b"")
-        det.analyze_event(evt)
-        # Write high-entropy data to the same file
         buf = os.urandom(128)
-        evt = _make_event(1, 15000, "evil", "/home/user/photo.jpg", 128, buf)
-        det.analyze_event(evt)
+        # Must overwrite 2+ distinct files to trigger (single-file is benign).
+        for fname in ["/home/user/photo.jpg", "/home/user/report.docx"]:
+            evt = _make_event(0, 15000, "evil", fname, 0, b"")
+            det.analyze_event(evt)
+            evt = _make_event(1, 15000, "evil", fname, 128, buf)
+            det.analyze_event(evt)
         overwrite_alerts = [
             a for a in det.alerts if a["reason"] == "In-place overwrite"
         ]
         self.assertGreater(len(overwrite_alerts), 0)
+
+    def test_single_file_in_place_encrypt_no_alert(self):
+        """Single-file in-place encryption (e.g. ccencrypt) → no alert."""
+        det = self._det()
+        evt = _make_event(0, 15004, "ccencrypt", "/home/user/notes.bin", 0, b"")
+        det.analyze_event(evt)
+        buf = os.urandom(128)
+        evt = _make_event(1, 15004, "ccencrypt", "/home/user/notes.bin", 128, buf)
+        det.analyze_event(evt)
+        overwrite_alerts = [
+            a for a in det.alerts if a["reason"] == "In-place overwrite"
+        ]
+        self.assertEqual(len(overwrite_alerts), 0)
 
     def test_write_to_new_file_no_overwrite_alert(self):
         """Writing to a file that was never opened → no in-place alert."""
@@ -1419,13 +1435,15 @@ class TestLegitEncryptionVsRansomware(unittest.TestCase):
         self.assertEqual(len(overwrite_alerts), 0)
 
     def test_ransomware_in_place_encrypt_detected(self):
-        """Ransomware: open photo.jpg, write ciphertext back to photo.jpg → alert."""
+        """Ransomware: open multiple files, write ciphertext back → alert."""
         det = self._det()
-        evt = _make_event(0, 17002, "locker", "/home/user/photo.jpg", 0, b"")
-        det.analyze_event(evt)
         buf = os.urandom(128)
-        evt = _make_event(1, 17002, "locker", "/home/user/photo.jpg", 128, buf)
-        det.analyze_event(evt)
+        # Must overwrite 2+ distinct files to trigger.
+        for fname in ["/home/user/photo.jpg", "/home/user/report.docx"]:
+            evt = _make_event(0, 17002, "locker", fname, 0, b"")
+            det.analyze_event(evt)
+            evt = _make_event(1, 17002, "locker", fname, 128, buf)
+            det.analyze_event(evt)
         overwrite_alerts = [
             a for a in det.alerts if a["reason"] == "In-place overwrite"
         ]

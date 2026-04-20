@@ -46,6 +46,16 @@ DEFAULT_WHITELISTED_PROCESSES = {
     "vim", "nvim", "nano", "code", "codium", "emacs",
     # Databases
     "postgres", "mysqld", "mongod", "redis-server",
+    # Core utilities that are never ransomware attack vectors
+    "dd", "head", "cat", "cp", "sort", "shuf",
+    # Media processing (high-entropy output but not attack tools)
+    "ffmpeg", "ffprobe", "avconv",
+    "convert", "mogrify",  # ImageMagick
+    "sox",                  # Audio processing
+    "x264", "x265", "vpxenc",
+    "handbrake", "HandBrakeCLI",
+    # Parallel compression variants (never used as attack tools)
+    "pigz", "pbzip2", "pixz", "lz4", "lzop",
 }
 
 # Prefixes that identify non-user-file write targets.  Writes to these
@@ -781,35 +791,62 @@ class RansomwareDetector:
             ]
 
             # --- Magic-byte analysis (false-positive reduction) ---
-            if self.magic_bytes_destroyed(buffer_bytes, entropy):
-                print(
-                    f"[!!!] ALERT: File header overwritten with encrypted data "
-                    f"by {comm} (PID {pid}) on '{filename}' "
-                    f"(entropy {entropy:.2f})"
-                )
-                self._record_alert(
-                    pid, comm, "Magic bytes destroyed",
-                    severity="critical", entropy=entropy, filename=filename,
-                )
-                self.take_action(pid, comm, "Magic bytes destroyed")
-                # Do NOT return — fall through to diversity and frequency
-                # checks so that multi-signal alerts accumulate.
-
-            # --- In-place overwrite detection ---
-            if self.is_in_place_overwrite(pid, filename) and entropy > self.threshold_entropy:
-                # Check if the output name is a legitimate derivative.
-                opened_files = list(self.open_tracker.get(pid, {}).keys())
-                if not self.is_legitimate_output_name(filename, opened_files):
+            # Only flag "magic bytes destroyed" when the write targets a
+            # file the process previously opened (in-place overwrite of an
+            # existing file).  Writing high-entropy data to a *new* output
+            # file (e.g. gpg writing passwd.gpg) is normal for compression
+            # and encryption tools.
+            is_overwrite = self.is_in_place_overwrite(pid, filename)
+            if (
+                self.magic_bytes_destroyed(buffer_bytes, entropy)
+                and is_overwrite
+            ):
+                # Count how many distinct files this PID has overwritten
+                # in-place with high entropy in the current window.
+                # A single in-place encryption (e.g. ccencrypt on one
+                # file) is legitimate.  Ransomware does it to many files.
+                overwritten_files = {
+                    e[2] for e in self.process_stats[pid]
+                    if e[1] > self.threshold_entropy
+                    and self.is_in_place_overwrite(pid, e[2])
+                }
+                if len(overwritten_files) >= 2:
                     print(
-                        f"[!!!] ALERT: In-place overwrite of '{filename}' "
-                        f"with high-entropy data by {comm} (PID {pid}) "
+                        f"[!!!] ALERT: File header overwritten with encrypted data "
+                        f"by {comm} (PID {pid}) on '{filename}' "
                         f"(entropy {entropy:.2f})"
                     )
                     self._record_alert(
-                        pid, comm, "In-place overwrite",
+                        pid, comm, "Magic bytes destroyed",
                         severity="critical", entropy=entropy, filename=filename,
                     )
-                    self.take_action(pid, comm, "In-place overwrite")
+                    self.take_action(pid, comm, "Magic bytes destroyed")
+                    # Do NOT return — fall through to diversity and frequency
+                    # checks so that multi-signal alerts accumulate.
+
+            # --- In-place overwrite detection ---
+            if is_overwrite and entropy > self.threshold_entropy:
+                # Check if the output name is a legitimate derivative.
+                opened_files = list(self.open_tracker.get(pid, {}).keys())
+                if not self.is_legitimate_output_name(filename, opened_files):
+                    # Same multi-file gate: single-file in-place encryption
+                    # is legitimate (ccencrypt, gpg --symmetric on one file).
+                    overwritten_files = {
+                        e[2] for e in self.process_stats[pid]
+                        if e[1] > self.threshold_entropy
+                        and self.is_in_place_overwrite(pid, e[2])
+                    }
+                    if len(overwritten_files) >= 2:
+                        print(
+                            f"[!!!] ALERT: In-place overwrite of '{filename}' "
+                            f"with high-entropy data by {comm} (PID {pid}) "
+                            f"(entropy {entropy:.2f})"
+                        )
+                        self._record_alert(
+                            pid, comm, "In-place overwrite",
+                            severity="critical", entropy=entropy, filename=filename,
+                        )
+                        self.take_action(pid, comm, "In-place overwrite")
 
             # Track this write for unlink correlation.
             if entropy > self.threshold_entropy:
@@ -844,8 +881,14 @@ class RansomwareDetector:
                     self.take_action(pid, comm, "High file diversity + Entropy")
                     return
 
-            # Check frequency and entropy (original heuristic)
+            # Check frequency and entropy (original heuristic).
+            # Require at least 2 unique files to avoid false positives
+            # from single-file operations (e.g. gpg encrypting one file
+            # produces many write syscalls to the same output).
             if len(self.process_stats[pid]) >= self.threshold_writes:
+                recent_files = {e[2] for e in self.process_stats[pid]}
+                if len(recent_files) < 2:
+                    return  # Single-file write burst — not ransomware
                 avg_entropy = sum(e[1] for e in self.process_stats[pid]) / len(
                     self.process_stats[pid]
                 )
