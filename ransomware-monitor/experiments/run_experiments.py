@@ -22,7 +22,11 @@ def parse_args():
     parser.add_argument(
         "--scenarios",
         default="experiments/scenarios.csv",
-        help="CSV file with scenario rows: id,label,command[,expected_comm,notes]",
+        help=(
+            "CSV file with scenario rows: "
+            "id,label,command[,expected_comm,notes]. "
+            "expected_comm may be a comma-separated list of process names."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -223,12 +227,21 @@ def parse_alerts(log_path, run_id):
     return alerts
 
 
+def parse_expected_comms(expected_comm):
+    return [
+        part.strip()
+        for part in (expected_comm or "").split(",")
+        if part.strip()
+    ]
+
+
 def compute_prediction(alerts, expected_comm):
     if not alerts:
         return False, 0
-    if not expected_comm:
+    expected_comms = parse_expected_comms(expected_comm)
+    if not expected_comms:
         return True, len(alerts)
-    matching = [a for a in alerts if a.get("comm") == expected_comm]
+    matching = [a for a in alerts if a.get("comm") in expected_comms]
     return bool(matching), len(matching)
 
 
