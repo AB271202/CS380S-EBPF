@@ -1506,6 +1506,158 @@ class TestLegitEncryptionVsRansomware(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Slow-Burn / Cumulative Profile Tests
+# ---------------------------------------------------------------------------
+
+class TestSlowBurnDetection(unittest.TestCase):
+    """Verify that sporadic encryption over time is detected via cumulative profile."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=0.01,  # Tiny window so sliding-window checks never fire
+            threshold_writes=100, threshold_unlinks=100,
+            threshold_unique_files=100, threshold_unique_dirs=100,
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_slow_burn_across_dirs_triggers_alert(self):
+        """One high-entropy write per 'minute' across directories → cumulative alert."""
+        det = self._det(cumulative_score_threshold=10)
+        buf = os.urandom(128)
+        # Simulate slow writes to different files in different dirs.
+        # Each file = +1, each new dir = +2, so 4 files in 4 dirs = 4+8 = 12 > 10.
+        targets = [
+            "/home/user/Documents/report.docx",
+            "/home/user/Pictures/photo.jpg",
+            "/home/user/Desktop/notes.txt",
+            "/home/user/Music/song.mp3",
+        ]
+        for f in targets:
+            time.sleep(0.02)  # Ensure each write is outside the sliding window
+            evt = _make_event(1, 20000, "slowlocker", f, 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertGreater(len(slow_alerts), 0)
+        self.assertEqual(slow_alerts[0]["severity"], "critical")
+
+    def test_slow_burn_with_unlinks_triggers_faster(self):
+        """High-entropy writes + source deletions accumulate score faster."""
+        det = self._det(cumulative_score_threshold=12)
+        buf = os.urandom(128)
+        # 2 files in 2 dirs = 2+4 = 6 from writes
+        # 2 unlinks of non-written files = 2*3 = 6
+        # Total = 12 >= threshold
+        for f in ["/home/user/a/f1.doc", "/home/user/b/f2.doc"]:
+            time.sleep(0.02)
+            evt = _make_event(1, 20001, "slowlocker", f + ".locked", 128, buf)
+            det.analyze_event(evt)
+        for f in ["/home/user/a/f1.doc", "/home/user/b/f2.doc"]:
+            time.sleep(0.02)
+            evt = _make_event(3, 20001, "slowlocker", f, 0, b"")
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertGreater(len(slow_alerts), 0)
+
+    def test_slow_burn_in_place_overwrites_score_high(self):
+        """In-place overwrites score +5 each, triggering faster."""
+        det = self._det(cumulative_score_threshold=14)
+        buf = os.urandom(128)
+        # 2 in-place overwrites: each = +1(file) + +2(dir) + +5(overwrite) = 8
+        # But second file in same dir: +1(file) + +5(overwrite) = 6
+        # Total = 8 + 6 = 14 >= threshold
+        files = ["/home/user/docs/a.pdf", "/home/user/docs/b.pdf"]
+        for f in files:
+            # Open first (so is_in_place_overwrite returns True)
+            evt = _make_event(0, 20002, "slowlocker", f, 0, b"")
+            det.analyze_event(evt)
+        for f in files:
+            time.sleep(0.02)
+            evt = _make_event(1, 20002, "slowlocker", f, 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertGreater(len(slow_alerts), 0)
+
+    def test_below_threshold_no_alert(self):
+        """A few sporadic writes below the threshold → no alert."""
+        det = self._det(cumulative_score_threshold=20)
+        buf = os.urandom(128)
+        # 2 files in 2 dirs = 2+4 = 6 < 20
+        for f in ["/home/user/a/f1.doc", "/home/user/b/f2.doc"]:
+            time.sleep(0.02)
+            evt = _make_event(1, 20003, "worker", f, 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 0)
+
+    def test_low_entropy_writes_dont_accumulate(self):
+        """Low-entropy writes (text files) don't increase the cumulative score."""
+        det = self._det(cumulative_score_threshold=5)
+        buf = b"A" * 128  # Low entropy
+        for i in range(20):
+            time.sleep(0.02)
+            evt = _make_event(1, 20004, "writer", f"/home/user/dir{i}/f.txt", 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 0)
+
+    def test_whitelisted_process_no_cumulative_alert(self):
+        """Whitelisted processes don't accumulate a profile."""
+        det = self._det(cumulative_score_threshold=5)
+        buf = os.urandom(128)
+        for i in range(20):
+            time.sleep(0.02)
+            evt = _make_event(1, 20005, "gcc", f"/home/user/build/obj_{i}.o", 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 0)
+
+    def test_system_path_writes_dont_accumulate(self):
+        """Writes to system paths don't increase the cumulative score."""
+        det = self._det(cumulative_score_threshold=5)
+        buf = os.urandom(128)
+        for i in range(20):
+            time.sleep(0.02)
+            evt = _make_event(1, 20006, "evil", f"/var/lib/data/f{i}.dat", 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 0)
+
+    def test_alert_fires_only_once_per_pid(self):
+        """The cumulative alert should fire at most once per PID."""
+        det = self._det(cumulative_score_threshold=5)
+        buf = os.urandom(128)
+        for i in range(10):
+            time.sleep(0.02)
+            evt = _make_event(1, 20007, "evil", f"/home/user/d{i}/f.doc", 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 1)  # Exactly one, not repeated
+
+    def test_duplicate_file_writes_dont_double_count(self):
+        """Writing to the same file twice doesn't increase the score twice."""
+        det = self._det(cumulative_score_threshold=10)
+        buf = os.urandom(128)
+        # Same file 10 times — should only count as 1 file + 1 dir = 3 points
+        for _ in range(10):
+            time.sleep(0.02)
+            evt = _make_event(1, 20008, "evil", "/home/user/docs/f.doc", 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 0)  # 3 < 10
+
+
+# ---------------------------------------------------------------------------
 # EDR Response Chain Tests
 # ---------------------------------------------------------------------------
 

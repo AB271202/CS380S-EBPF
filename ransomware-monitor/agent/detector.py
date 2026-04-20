@@ -149,6 +149,7 @@ class RansomwareDetector:
         snapshot_cmd=None,
         quarantine_dir=None,
         enable_network_isolation=False,
+        cumulative_score_threshold=None,
     ):
         # Tune defaults for 128-byte write samples from eBPF.
         self.threshold_entropy = float(
@@ -214,6 +215,19 @@ class RansomwareDetector:
         self.suspicious_extensions = {
             ".locked", ".crypto", ".encrypted", ".onion", ".lck", ".temp",
         }
+
+        # --- Cumulative per-process profile (slow-burn detection) ---
+        # Unlike the sliding-window trackers above, these are never pruned.
+        # They accumulate lifetime behavior so that a process encrypting
+        # one file per minute still triggers after enough files.
+        self.cumulative_score_threshold = int(
+            os.getenv(
+                "CUMULATIVE_SCORE_THRESHOLD",
+                cumulative_score_threshold if cumulative_score_threshold is not None else 15,
+            )
+        )
+        self._process_profiles: dict[int, dict] = {}
+        self._cumulative_alerted: set[int] = set()  # PIDs already alerted
 
         # --- False-positive reduction ---
 
@@ -592,6 +606,89 @@ class RansomwareDetector:
         return len(files), len(dirs)
 
     # ------------------------------------------------------------------
+    # Cumulative per-process profile (slow-burn detection)
+    # ------------------------------------------------------------------
+
+    def _get_profile(self, pid):
+        """Return the cumulative profile dict for *pid*, creating it if needed."""
+        if pid not in self._process_profiles:
+            self._process_profiles[pid] = {
+                "high_entropy_files": set(),
+                "high_entropy_dirs": set(),
+                "unlinked_sources": 0,   # Unlinks of files NOT written by this PID
+                "in_place_overwrites": set(),
+                "score": 0.0,
+            }
+        return self._process_profiles[pid]
+
+    def _update_profile_write(self, pid, filename, entropy, is_overwrite):
+        """Update the cumulative profile after a high-entropy write."""
+        if entropy <= self.threshold_entropy:
+            return
+        if not self.is_user_file(filename):
+            return
+
+        profile = self._get_profile(pid)
+        directory = os.path.dirname(filename)
+
+        if filename not in profile["high_entropy_files"]:
+            profile["high_entropy_files"].add(filename)
+            profile["score"] += 1.0  # New unique file
+
+        if directory not in profile["high_entropy_dirs"]:
+            profile["high_entropy_dirs"].add(directory)
+            profile["score"] += 2.0  # New unique directory
+
+        if is_overwrite and filename not in profile["in_place_overwrites"]:
+            profile["in_place_overwrites"].add(filename)
+            profile["score"] += 5.0  # In-place overwrite is very suspicious
+
+    def _update_profile_unlink(self, pid, filename):
+        """Update the cumulative profile after an unlink.
+
+        Only scores unlinks of files the PID did NOT recently write to
+        (i.e., deleting originals after encrypting copies).
+        """
+        profile = self._get_profile(pid)
+        recent_writes = profile["high_entropy_files"]
+        if filename not in recent_writes:
+            profile["unlinked_sources"] += 1
+            profile["score"] += 3.0  # Deleting a file you didn't write = suspicious
+
+    def _check_cumulative_alert(self, pid, comm):
+        """Fire an alert if the cumulative score exceeds the threshold."""
+        if pid in self._cumulative_alerted:
+            return  # Already alerted for this PID
+        profile = self._get_profile(pid)
+        if profile["score"] >= self.cumulative_score_threshold:
+            self._cumulative_alerted.add(pid)
+            n_files = len(profile["high_entropy_files"])
+            n_dirs = len(profile["high_entropy_dirs"])
+            n_overwrites = len(profile["in_place_overwrites"])
+            n_unlinks = profile["unlinked_sources"]
+            print(
+                f"[!!!] ALERT: Slow-burn ransomware behavior from "
+                f"{comm} (PID {pid})"
+            )
+            print(
+                f"      Cumulative score {profile['score']:.0f} "
+                f"(threshold {self.cumulative_score_threshold}): "
+                f"{n_files} encrypted files across {n_dirs} dirs, "
+                f"{n_overwrites} in-place overwrites, "
+                f"{n_unlinks} source deletions"
+            )
+            self._record_alert(
+                pid, comm, "Slow-burn ransomware",
+                severity="critical",
+                cumulative_score=profile["score"],
+                encrypted_files=n_files,
+                encrypted_dirs=n_dirs,
+                in_place_overwrites=n_overwrites,
+                source_deletions=n_unlinks,
+            )
+            self.take_action(pid, comm, "Slow-burn ransomware")
+
+    # ------------------------------------------------------------------
     # In-place overwrite detection
     # ------------------------------------------------------------------
 
@@ -836,6 +933,10 @@ class RansomwareDetector:
             if entropy > self.threshold_entropy:
                 self.write_targets[pid].append((now, filename))
 
+            # --- Cumulative profile update (slow-burn detection) ---
+            self._update_profile_write(pid, filename, entropy, is_overwrite)
+            self._check_cumulative_alert(pid, comm)
+
             # --- File diversity scoring (false-positive reduction) ---
             unique_files, unique_dirs = self.get_file_diversity(pid)
             if (
@@ -913,6 +1014,10 @@ class RansomwareDetector:
                     severity="critical", deleted_file=filename,
                 )
                 self.take_action(pid, comm, "Write-then-delete")
+
+            # --- Cumulative profile update (slow-burn detection) ---
+            self._update_profile_unlink(pid, filename)
+            self._check_cumulative_alert(pid, comm)
 
             if len(self.unlink_stats[pid]) >= self.threshold_unlinks:
                 print(
