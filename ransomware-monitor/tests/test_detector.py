@@ -39,11 +39,12 @@ from detector import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_event(event_type, pid, comm, filename, size=0, buffer=b""):
+def _make_event(event_type, pid, comm, filename, size=0, buffer=b"", ppid=0):
     """Build a lightweight event object that quacks like a BPF event."""
     evt = types.SimpleNamespace()
     evt.type = event_type
     evt.pid = pid
+    evt.ppid = ppid
     evt.comm = comm.encode("utf-8") if isinstance(comm, str) else comm
     evt.filename = filename.encode("utf-8") if isinstance(filename, str) else filename
     evt.size = size
@@ -305,6 +306,14 @@ class TestProcessLineageValidation(unittest.TestCase):
         ):
             self.assertTrue(det.is_whitelisted("gcc", pid=100))
 
+    def test_lineage_with_only_unreadable_comms_is_trusted(self):
+        """If ancestor PIDs exist but all comm lookups fail, trust it."""
+        det = RansomwareDetector(verify_binary_hash=False)
+        with mock.patch.object(
+            det, "get_process_lineage", return_value=[(99, None), (1, None)],
+        ):
+            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+
     def test_lineage_cache_avoids_recheck(self):
         """Lineage is checked once per PID and cached."""
         det = RansomwareDetector(verify_binary_hash=False)
@@ -442,6 +451,279 @@ class TestHashAndLineageCombined(unittest.TestCase):
             det, "get_process_lineage", return_value=[(50, "evil_dropper")],
         ):
             self.assertFalse(det.is_whitelisted("gcc", pid=100))
+
+
+# ---------------------------------------------------------------------------
+# 1e. Process-Tree Attribution Tests
+# ---------------------------------------------------------------------------
+
+class TestProcessTreeAttribution(unittest.TestCase):
+    """Verify that trusted child writes can be attributed to a parent."""
+
+    def test_whitelisted_child_writes_attributed_to_parent(self):
+        """High-entropy child writes should lift the active parent profile."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,  # isolate the diversity heuristic
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        parent_pid = 20000
+        child_pid = 20001
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        # Parent establishes an active profile via directory traversal.
+        for directory in dirs:
+            evt = _make_event(4, parent_pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+            det.analyze_event(evt)
+
+        with mock.patch.object(det, "get_parent_pid", return_value=parent_pid), \
+             mock.patch.object(det, "_read_proc_comm", return_value="ransim_dlg"):
+            for i, directory in enumerate(dirs):
+                evt = _make_event(
+                    1,
+                    child_pid,
+                    b"ccencrypt\x00\x00",
+                    f"{directory}/file_{i}.cpt",
+                    128,
+                    buf,
+                )
+                det.analyze_event(evt)
+
+        parent_alerts = [a for a in det.alerts if a["pid"] == parent_pid]
+        self.assertGreater(len(parent_alerts), 0)
+        self.assertTrue(any(a.get("attributed") for a in parent_alerts))
+        self.assertTrue(
+            any(a.get("attributed_from_comm") == "ccencrypt" for a in parent_alerts)
+        )
+        self.assertEqual(len([a for a in det.alerts if a["pid"] == child_pid]), 0)
+
+    def test_bpf_provided_ppid_avoids_short_lived_child_race(self):
+        """The child->parent hop should work from event.ppid without /proc lookup."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        parent_pid = 20500
+        child_pid = 20501
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        for directory in dirs:
+            det.analyze_event(
+                _make_event(4, parent_pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+            )
+
+        with mock.patch.object(
+            det,
+            "get_parent_pid",
+            side_effect=AssertionError("child /proc lookup should not be needed"),
+        ), mock.patch.object(det, "_read_proc_comm", return_value="ransim_dlg"):
+            for i, directory in enumerate(dirs):
+                det.analyze_event(
+                    _make_event(
+                        1,
+                        child_pid,
+                        b"ccencrypt\x00\x00",
+                        f"{directory}/file_{i}.cpt",
+                        128,
+                        buf,
+                        ppid=parent_pid,
+                    )
+                )
+
+        parent_alerts = [a for a in det.alerts if a["pid"] == parent_pid]
+        self.assertGreater(len(parent_alerts), 0)
+        self.assertTrue(any(a.get("attributed") for a in parent_alerts))
+
+    def test_whitelisted_helper_non_write_events_stay_suppressed_under_parent(self):
+        """A delegated helper should not emit its own lineage alert once attributed."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=True,
+        )
+        parent_pid = 20600
+        child_pid = 20601
+
+        for directory in (
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ):
+            det.analyze_event(
+                _make_event(4, parent_pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+            )
+
+        with mock.patch.object(det, "_read_proc_comm", return_value="ransim_dlg"):
+            det.analyze_event(
+                _make_event(
+                    0,
+                    child_pid,
+                    b"ccencrypt\x00\x00",
+                    "/home/user/Documents/report.docx.cpt",
+                    0,
+                    b"",
+                    ppid=parent_pid,
+                )
+            )
+
+        child_alerts = [a for a in det.alerts if a["pid"] == child_pid]
+        self.assertEqual(child_alerts, [])
+
+    def test_whitelisted_child_no_attribution_when_parent_whitelisted(self):
+        """Benign helper processes should stay silent under trusted parents."""
+        det = RansomwareDetector(
+            threshold_writes=3,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        child_pid = 21001
+
+        with mock.patch.object(det, "get_parent_pid", return_value=21000), \
+             mock.patch.object(det, "_read_proc_comm", return_value="bash"):
+            for i in range(10):
+                evt = _make_event(
+                    1,
+                    child_pid,
+                    b"gzip\x00\x00",
+                    f"/home/user/file_{i}.gz",
+                    128,
+                    buf,
+                )
+                det.analyze_event(evt)
+
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_no_attribution_when_parent_has_no_active_signals(self):
+        """A parent without recent behavioral state should not inherit writes."""
+        det = RansomwareDetector(
+            threshold_writes=3,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        parent_pid = 22000
+        child_pid = 22001
+
+        with mock.patch.object(det, "get_parent_pid", return_value=parent_pid), \
+             mock.patch.object(det, "_read_proc_comm", return_value="unknown_proc"):
+            for i in range(10):
+                evt = _make_event(
+                    1,
+                    child_pid,
+                    b"ccencrypt\x00\x00",
+                    f"/home/user/file_{i}.cpt",
+                    128,
+                    buf,
+                )
+                det.analyze_event(evt)
+
+        self.assertEqual(len(det.alerts), 0)
+
+    def test_whitelisted_same_pid_exec_does_not_inherit_shell_identity(self):
+        """A shell exec into a trusted tool should not attribute back to the shell PID."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+        )
+        pid = 23001
+        buf = os.urandom(128)
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        for directory in dirs:
+            evt = _make_event(4, pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+            det.analyze_event(evt)
+
+        for i, directory in enumerate(dirs):
+            evt = _make_event(
+                1,
+                pid,
+                b"gzip\x00\x00",
+                f"{directory}/file_{i}.cpt",
+                128,
+                buf,
+            )
+            det.analyze_event(evt)
+
+        alerts = [a for a in det.alerts if a["pid"] == pid]
+        self.assertEqual(alerts, [])
+
+    def test_fork_exec_helper_aggregates_writes_back_to_parent(self):
+        """Fresh helper PIDs should roll their inherited identity back to the parent."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+        )
+        parent_pid = 24000
+        child_pids = [24001, 24002, 24003]
+        buf = os.urandom(128)
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        parent_lookup = {child: parent_pid for child in child_pids}
+
+        with mock.patch.object(det, "get_parent_pid", side_effect=lambda pid: parent_lookup.get(pid)), \
+             mock.patch.object(det, "_read_proc_comm", return_value="ransim_dlg"):
+            for child_pid, directory in zip(child_pids, dirs):
+                det.analyze_event(
+                    _make_event(4, child_pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+                )
+                det.analyze_event(
+                    _make_event(
+                        1,
+                        child_pid,
+                        b"ccencrypt\x00\x00",
+                        f"{directory}/file.cpt",
+                        128,
+                        buf,
+                    )
+                )
+
+        parent_alerts = [a for a in det.alerts if a["pid"] == parent_pid]
+        self.assertGreater(len(parent_alerts), 0)
+        self.assertTrue(any(a.get("attribution_mode") == "process_tree" for a in parent_alerts))
 
 
 # ---------------------------------------------------------------------------

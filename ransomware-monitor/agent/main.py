@@ -78,7 +78,7 @@ def main():
         if args.verbose:
             event_type_str = EVENT_TYPES.get(event.type, "UNKNOWN")
             print(
-                f"Event: {event_type_str} PID={event.pid} "
+                f"Event: {event_type_str} PID={event.pid} PPID={event.ppid} "
                 f"Comm={event.comm.decode('utf-8', 'replace')} "
                 f"File={event.filename.decode('utf-8', 'replace')} "
                 f"Size={event.size}"

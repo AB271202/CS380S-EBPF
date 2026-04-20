@@ -21,6 +21,7 @@ enum event_type {
 
 struct event_t {
     u32 pid;
+    u32 ppid;
     enum event_type type;
     char comm[TASK_COMM_LEN];
     char filename[256];
@@ -43,6 +44,25 @@ static __always_inline struct event_t *get_event(void) {
     return event_heap.lookup(&zero);
 }
 
+static __always_inline void populate_process_info(struct event_t *event) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct task_struct *parent = NULL;
+
+    event->pid = pid_tgid >> 32;
+
+    if (!task) {
+        return;
+    }
+
+    bpf_probe_read_kernel(&parent, sizeof(parent), &task->real_parent);
+    if (!parent) {
+        return;
+    }
+
+    bpf_probe_read_kernel(&event->ppid, sizeof(event->ppid), &parent->tgid);
+}
+
 static __always_inline int trace_open(struct pt_regs *ctx, const char *filename, int flags) {
     struct event_t *event = get_event();
     if (!event) return 0;
@@ -50,7 +70,7 @@ static __always_inline int trace_open(struct pt_regs *ctx, const char *filename,
     __builtin_memset(event, 0, sizeof(*event));
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    event->pid = pid_tgid >> 32;
+    populate_process_info(event);
     event->type = EVENT_OPEN;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 
@@ -80,7 +100,7 @@ static __always_inline int trace_write(struct pt_regs *ctx, const char *buf, siz
         return 0;
     }
 
-    event->pid = pid_tgid >> 32;
+    populate_process_info(event);
     event->type = EVENT_WRITE;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 
@@ -103,7 +123,7 @@ static __always_inline int trace_rename(struct pt_regs *ctx, const char *newname
 
     __builtin_memset(event, 0, sizeof(*event));
 
-    event->pid = bpf_get_current_pid_tgid() >> 32;
+    populate_process_info(event);
     event->type = EVENT_RENAME;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 
@@ -137,7 +157,7 @@ static __always_inline int trace_unlink(struct pt_regs *ctx, struct filename *na
 
     __builtin_memset(event, 0, sizeof(*event));
 
-    event->pid = bpf_get_current_pid_tgid() >> 32;
+    populate_process_info(event);
     event->type = EVENT_UNLINK;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 
@@ -158,7 +178,7 @@ static __always_inline int trace_getdents(struct pt_regs *ctx) {
     __builtin_memset(event, 0, sizeof(*event));
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    event->pid = pid_tgid >> 32;
+    populate_process_info(event);
     event->type = EVENT_GETDENTS;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 

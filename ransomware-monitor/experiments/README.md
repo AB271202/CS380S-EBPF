@@ -7,6 +7,11 @@ This folder contains the scripts used to run the ransomware detector against:
 - a benign stress suite derived from Phoronix-style workloads
 - a behavioral ransomware simulation suite derived from threat intelligence
 
+The current detector also supports process-tree attribution for trusted helper
+children. The BPF event path captures each event's parent PID in-kernel, and
+the detector can attribute a whitelisted child's write signal back to a
+non-whitelisted orchestrator that already has active behavioral context.
+
 The harness records per-run results, logs, and confusion-matrix metrics.
 
 ## Before You Run Anything
@@ -213,7 +218,7 @@ The behavioral suite mirrors the same CSV structure and contains:
 - encrypt-then-delete simulations
 - overwrite-and-rename simulations
 - a throttled evasion variant
-- a delegated-encryption scenario that shells out to per-file `ccencrypt` child processes
+- a delegated-encryption scenario that shells out to per-file `ccencrypt` child processes and exercises process-tree attribution
 
 ## Common Problems
 
