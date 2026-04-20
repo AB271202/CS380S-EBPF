@@ -1,0 +1,38 @@
+{
+    "whitelisted_processes": [
+        "my-backup-tool",
+        "custom-sync"
+    ],
+    "trusted_hashes": {
+        "/usr/bin/my-backup-tool": [
+            "sha256_hex_digest_here"
+        ]
+    },
+    "trusted_parents": [
+        "my-orchestrator"
+    ],
+    "thresholds": {
+        "entropy": 6.3,
+        "writes": 10,
+        "unlinks": 5,
+        "time_window_sec": 1.0,
+        "unique_files": 8,
+        "unique_dirs": 3,
+        "dir_scans": 5,
+        "chmod": 5
+    },
+    "suspicious_extensions": [
+        ".locked",
+        ".crypto",
+        ".encrypted",
+        ".onion",
+        ".lck",
+        ".temp"
+    ],
+    "canary_dirs": [
+        "~/Documents",
+        "/srv/shared"
+    ],
+    "action_mode": "suspend",
+    "snapshot_cmd": "btrfs subvolume snapshot -r /home /home/.snapshots/ransomware-$(date +%s)"
+}

@@ -1,5 +1,6 @@
 from bcc import BPF
 import argparse
+import json
 import os
 import signal
 import sys
@@ -13,10 +14,13 @@ EVENT_TYPES = {
     1: "WRITE",
     2: "RENAME",
     3: "UNLINK",
-    4: "GETDENTS"
+    4: "GETDENTS",
+    5: "CHMOD",
+    6: "CHOWN",
 }
 
 DEFAULT_PERF_PAGE_CNT = 4096
+
 
 def main():
     parser = argparse.ArgumentParser(description="Ransomware monitor")
@@ -24,6 +28,31 @@ def main():
         "--verbose",
         action="store_true",
         help="Print every traced filesystem event",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to JSON configuration file for thresholds, whitelist, etc.",
+    )
+    parser.add_argument(
+        "--action-mode",
+        choices=["simulate", "suspend", "kill"],
+        default="simulate",
+        help="Action to take on detection: simulate (log only), suspend (SIGSTOP), kill (SIGKILL)",
+    )
+    parser.add_argument(
+        "--canary-dirs",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Directories in which to deploy canary (honeypot) files",
+    )
+    parser.add_argument(
+        "--snapshot-cmd",
+        type=str,
+        default=None,
+        help="Shell command to run for filesystem snapshot on critical alert (e.g. 'btrfs subvolume snapshot ...')",
     )
     args = parser.parse_args()
 
@@ -36,14 +65,24 @@ def main():
         sys.exit(1)
 
     print(f"Loading BPF program from {BPF_SOURCE_FILE}...")
-    
+
     try:
         b = BPF(src_file=BPF_SOURCE_FILE)
     except Exception as e:
         print(f"Failed to load BPF program: {e}")
         sys.exit(1)
 
-    detector = RansomwareDetector()
+    # Build detector kwargs from config file + CLI
+    det_kwargs = {}
+    if args.config:
+        det_kwargs["whitelist_config"] = args.config
+    if args.canary_dirs:
+        det_kwargs["canary_dirs"] = args.canary_dirs
+
+    det_kwargs["action_mode"] = args.action_mode
+    det_kwargs["snapshot_cmd"] = args.snapshot_cmd
+
+    detector = RansomwareDetector(**det_kwargs)
 
     def print_event(cpu, data, size):
         event = b["events"].event(data)
@@ -68,11 +107,11 @@ def main():
 
     page_cnt = int(os.getenv("PERF_PAGE_CNT", str(DEFAULT_PERF_PAGE_CNT)))
     b["events"].open_perf_buffer(print_event, page_cnt=page_cnt, lost_cb=on_lost_event)
-    
+
     mode = "verbose" if args.verbose else "alert-only"
     print(
-        f"Ransomware monitor started ({mode} mode, perf pages={page_cnt}). "
-        "Press Ctrl+C to stop."
+        f"Ransomware monitor started ({mode} mode, action={args.action_mode}, "
+        f"perf pages={page_cnt}). Press Ctrl+C to stop."
     )
 
     def signal_handler(sig, frame):
@@ -86,6 +125,7 @@ def main():
             b.perf_buffer_poll()
         except KeyboardInterrupt:
             break
+
 
 if __name__ == "__main__":
     main()

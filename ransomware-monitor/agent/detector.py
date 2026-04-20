@@ -1,9 +1,52 @@
 import math
 import collections
 import hashlib
+import logging
 import os
+import signal as signal_mod
+import subprocess
 import time
 import json
+
+# ---------------------------------------------------------------------------
+# Structured JSON logger
+# ---------------------------------------------------------------------------
+# When the ``RANSOMWARE_MONITOR_LOG`` environment variable is set to a file
+# path, alerts are written as one-JSON-object-per-line for SIEM ingestion.
+# Otherwise a human-readable console format is used.
+
+_log = logging.getLogger("ransomware_monitor")
+
+def setup_logging(json_path=None, level=logging.INFO):
+    """Configure the module-level logger.
+
+    Parameters
+    ----------
+    json_path : str or None
+        If set, a ``FileHandler`` is added that writes JSON-lines to this
+        path.  A ``StreamHandler`` with human-readable output is always
+        present.
+    level : int
+        Logging level (default ``INFO``).
+    """
+    _log.setLevel(level)
+    # Avoid duplicate handlers on repeated calls.
+    _log.handlers.clear()
+
+    # Console handler — human-readable
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(message)s"))
+    _log.addHandler(console)
+
+    if json_path is None:
+        json_path = os.getenv("RANSOMWARE_MONITOR_LOG")
+
+    if json_path:
+        fh = logging.FileHandler(json_path)
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        _log.addHandler(fh)
+
+setup_logging()
 
 
 # Well-known magic bytes for common file types.
@@ -130,6 +173,9 @@ class RansomwareDetector:
         threshold_unique_files=None,
         threshold_unique_dirs=None,
         threshold_dir_scans=None,
+        action_mode="simulate",
+        snapshot_cmd=None,
+        threshold_chmod=None,
     ):
         # Tune defaults for 128-byte write samples from eBPF.
         self.threshold_entropy = float(
@@ -176,6 +222,18 @@ class RansomwareDetector:
                 threshold_dir_scans if threshold_dir_scans is not None else 5,
             )
         )
+        self.threshold_chmod = int(
+            os.getenv(
+                "THRESHOLD_CHMOD",
+                threshold_chmod if threshold_chmod is not None else 5,
+            )
+        )
+
+        # --- Action mode ---
+        # "simulate" = log only, "suspend" = SIGSTOP, "kill" = SIGKILL
+        self.action_mode = action_mode
+        self.snapshot_cmd = snapshot_cmd
+        self._snapshot_triggered = False  # Only trigger once per session
 
         # process_stats: { pid: [(timestamp, entropy, filename), ...] }
         self.process_stats = collections.defaultdict(list)
@@ -189,6 +247,8 @@ class RansomwareDetector:
         # write_targets: { pid: [(timestamp, source_file, dest_file), ...] }
         # Tracks recent high-entropy write targets for unlink correlation.
         self.write_targets: dict[int, list[tuple[float, str]]] = collections.defaultdict(list)
+        # chmod_stats: { pid: [timestamp, ...] }
+        self.chmod_stats: dict[int, list[float]] = collections.defaultdict(list)
         self.suspicious_extensions = {
             ".locked", ".crypto", ".encrypted", ".onion", ".lck", ".temp",
         }
@@ -673,7 +733,7 @@ class RansomwareDetector:
     # ------------------------------------------------------------------
 
     def _record_alert(self, pid, comm, reason, severity="high", **extra):
-        """Store an alert dict and print it."""
+        """Store an alert dict, print it, and emit structured JSON log."""
         alert = {
             "pid": pid,
             "comm": comm,
@@ -683,6 +743,8 @@ class RansomwareDetector:
             **extra,
         }
         self.alerts.append(alert)
+        # Structured JSON log line for SIEM ingestion
+        _log.info(json.dumps(alert, default=str))
         return alert
 
     # ------------------------------------------------------------------
@@ -910,15 +972,90 @@ class RansomwareDetector:
                 )
                 self.take_action(pid, comm, "Directory traversal + Writes")
 
+        elif event.type in (5, 6):  # CHMOD / CHOWN
+            label = "chmod" if event.type == 5 else "chown"
+            self.chmod_stats[pid].append(now)
+
+            # Clean up old events
+            self.chmod_stats[pid] = [
+                t for t in self.chmod_stats[pid] if now - t <= self.time_window
+            ]
+
+            if len(self.chmod_stats[pid]) >= self.threshold_chmod:
+                print(
+                    f"[!!!] ALERT: Rapid metadata changes ({label}) "
+                    f"from {comm} (PID {pid})"
+                )
+                print(
+                    f"      {len(self.chmod_stats[pid])} {label} calls "
+                    f"in {self.time_window}s on '{filename}'"
+                )
+                self._record_alert(
+                    pid, comm, f"Rapid {label}",
+                    severity="high", filename=filename,
+                )
+                self.take_action(pid, comm, f"Rapid {label}")
+
     def take_action(self, pid, comm, reason):
+        """Respond to a detected threat.
+
+        Behaviour depends on ``self.action_mode``:
+
+        * ``"simulate"`` — log only, no signal sent.
+        * ``"suspend"`` — send ``SIGSTOP`` so an admin can review.
+        * ``"kill"`` — send ``SIGKILL`` to terminate immediately.
+
+        For **critical** alerts, if ``self.snapshot_cmd`` is configured
+        and has not yet been triggered this session, a filesystem snapshot
+        is taken automatically.
+        """
         print(
-            f"[X] ACTION: Terminating process {comm} (PID {pid}) "
-            f"due to {reason}..."
+            f"[X] ACTION ({self.action_mode}): Process {comm} (PID {pid}) "
+            f"flagged for {reason}"
         )
-        try:
-            # os.kill(pid, 9)  # Commented out for safety during testing
-            print(f"      (Simulation) Sent SIGKILL to PID {pid}")
-        except ProcessLookupError as exc:
-            print(f"      ProcessLookupError: {exc}")
-        except Exception as exc:
-            print(f"      Error terminating process: {exc}")
+
+        # --- Filesystem snapshot on first critical alert ---
+        if (
+            self.snapshot_cmd
+            and not self._snapshot_triggered
+            and any(
+                a["pid"] == pid and a["severity"] == "critical"
+                for a in self.alerts[-5:]  # Check recent alerts
+            )
+        ):
+            self._snapshot_triggered = True
+            print(f"[SNAPSHOT] Running: {self.snapshot_cmd}")
+            try:
+                subprocess.run(
+                    self.snapshot_cmd, shell=True, timeout=30,
+                    capture_output=True, text=True,
+                )
+                print("[SNAPSHOT] Filesystem snapshot created successfully")
+            except subprocess.TimeoutExpired:
+                print("[SNAPSHOT] WARNING: Snapshot command timed out")
+            except Exception as exc:
+                print(f"[SNAPSHOT] ERROR: {exc}")
+
+        # --- Process action ---
+        if self.action_mode == "simulate":
+            print(f"      (Simulation) Would send signal to PID {pid}")
+        elif self.action_mode == "suspend":
+            try:
+                os.kill(pid, signal_mod.SIGSTOP)
+                print(f"      Sent SIGSTOP to PID {pid} — process suspended")
+            except ProcessLookupError:
+                print(f"      ProcessLookupError: PID {pid} no longer exists")
+            except PermissionError:
+                print(f"      PermissionError: Cannot signal PID {pid}")
+            except Exception as exc:
+                print(f"      Error suspending process: {exc}")
+        elif self.action_mode == "kill":
+            try:
+                os.kill(pid, signal_mod.SIGKILL)
+                print(f"      Sent SIGKILL to PID {pid}")
+            except ProcessLookupError:
+                print(f"      ProcessLookupError: PID {pid} no longer exists")
+            except PermissionError:
+                print(f"      PermissionError: Cannot signal PID {pid}")
+            except Exception as exc:
+                print(f"      Error terminating process: {exc}")

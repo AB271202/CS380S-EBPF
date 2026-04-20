@@ -1,0 +1,29 @@
+[Unit]
+Description=Ransomware Monitor — eBPF-based ransomware detection agent
+Documentation=file:///opt/ransomware-monitor/Readme.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/ransomware-monitor/agent/main.py --config /etc/ransomware-monitor/config.json --action-mode suspend
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ransomware-monitor
+
+# Security hardening
+ProtectSystem=strict
+ReadWritePaths=/var/log/ransomware-monitor /etc/ransomware-monitor
+ProtectHome=read-only
+NoNewPrivileges=false
+# Needs root for eBPF
+AmbientCapabilities=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON CAP_NET_ADMIN
+
+# Environment
+Environment=RANSOMWARE_MONITOR_LOG=/var/log/ransomware-monitor/alerts.jsonl
+Environment=PERF_PAGE_CNT=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,9 @@ enum event_type {
     EVENT_WRITE,
     EVENT_RENAME,
     EVENT_UNLINK,
-    EVENT_GETDENTS
+    EVENT_GETDENTS,
+    EVENT_CHMOD,
+    EVENT_CHOWN
 };
 
 struct event_t {
@@ -160,6 +162,41 @@ TRACEPOINT_PROBE(syscalls, sys_enter_getdents64) {
     if (fname) {
         bpf_probe_read_kernel(&event->filename, sizeof(event->filename), fname->s);
     }
+
+    events.perf_submit(args, event, sizeof(*event));
+    return 0;
+}
+
+TRACEPOINT_PROBE(syscalls, sys_enter_fchmodat) {
+    u32 zero = 0;
+    struct event_t *event = event_heap.lookup(&zero);
+    if (!event) return 0;
+
+    __builtin_memset(event, 0, sizeof(*event));
+
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->type = EVENT_CHMOD;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+
+    bpf_probe_read_user_str(&event->filename, sizeof(event->filename), args->filename);
+    event->size = args->mode;
+
+    events.perf_submit(args, event, sizeof(*event));
+    return 0;
+}
+
+TRACEPOINT_PROBE(syscalls, sys_enter_fchownat) {
+    u32 zero = 0;
+    struct event_t *event = event_heap.lookup(&zero);
+    if (!event) return 0;
+
+    __builtin_memset(event, 0, sizeof(*event));
+
+    event->pid = bpf_get_current_pid_tgid() >> 32;
+    event->type = EVENT_CHOWN;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+
+    bpf_probe_read_user_str(&event->filename, sizeof(event->filename), args->filename);
 
     events.perf_submit(args, event, sizeof(*event));
     return 0;

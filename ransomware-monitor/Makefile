@@ -1,4 +1,7 @@
-.PHONY: run run-verbose deps clean mount test-entropy test-extension
+.PHONY: run run-verbose deps clean mount test-entropy test-extension test-unlink \
+       test-slowburn test-bigbang test-rename test-chmod test-all-attacks \
+       test-compile test-grep test-backup test-all-benign \
+       install-service uninstall-service unit-test
 
 # eBPF programs must be loaded into the kernel as root.
 run:
@@ -6,6 +9,12 @@ run:
 
 run-verbose:
 	sudo python3 agent/main.py --verbose
+
+run-suspend:
+	sudo python3 agent/main.py --action-mode suspend
+
+run-config:
+	sudo python3 agent/main.py --config config.example.json
 
 mount: 
 	sudo mount -t debugfs debugfs /sys/kernel/debug || true
@@ -15,13 +24,15 @@ mount:
 # Note: This assumes a Debian/Ubuntu-based system.
 deps:
 	sudo apt-get update
-	sudo apt-get install -y bpfcc-tools linux-headers-$$(uname -r) python3-bpfcc
+	sudo apt-get install -y bpfcc-tools linux-headers-$(uname -r) python3-bpfcc
 	pip3 install -r requirements.txt
 
-# --- Test Cases ---
+# --- Unit Tests ---
 
-# To use these, run 'make run-verbose' in one terminal and 
-# then run these targets in another.
+unit-test:
+	python3 -m unittest tests/test_detector.py -v
+
+# --- Simulation: Attack Patterns ---
 
 # Simulate high-entropy writes (e.g., encryption)
 test-entropy:
@@ -35,8 +46,65 @@ test-extension:
 test-unlink:
 	python3 tests/simulate_ransomware.py --type unlink
 
+# Simulate slow-burn encryption
+test-slowburn:
+	python3 tests/simulate_ransomware.py --type slowburn
+
+# Simulate big-bang encryption across directories
+test-bigbang:
+	python3 tests/simulate_ransomware.py --type bigbang
+
+# Simulate rename-only attack
+test-rename:
+	python3 tests/simulate_ransomware.py --type rename_only
+
+# Simulate chmod lockout
+test-chmod:
+	python3 tests/simulate_ransomware.py --type chmod_lock
+
+# Run all attack simulations
+test-all-attacks:
+	python3 tests/simulate_ransomware.py --type all_attacks
+
+# --- Simulation: False-Positive Workloads ---
+
+# Simulate C++ compilation
+test-compile:
+	python3 tests/simulate_ransomware.py --type compile
+
+# Simulate recursive grep
+test-grep:
+	python3 tests/simulate_ransomware.py --type grep
+
+# Simulate backup operation
+test-backup:
+	python3 tests/simulate_ransomware.py --type backup
+
+# Run all benign workloads
+test-all-benign:
+	python3 tests/simulate_ransomware.py --type all_benign
+
+# --- Systemd Service ---
+
+install-service:
+	sudo cp ransomware-monitor.service /etc/systemd/system/
+	sudo mkdir -p /etc/ransomware-monitor /var/log/ransomware-monitor
+	sudo cp config.example.json /etc/ransomware-monitor/config.json
+	sudo systemctl daemon-reload
+	sudo systemctl enable ransomware-monitor
+	@echo "Service installed. Start with: sudo systemctl start ransomware-monitor"
+
+uninstall-service:
+	sudo systemctl stop ransomware-monitor || true
+	sudo systemctl disable ransomware-monitor || true
+	sudo rm -f /etc/systemd/system/ransomware-monitor.service
+	sudo systemctl daemon-reload
+	@echo "Service uninstalled."
+
 # Clean up Python cache files
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 	rm -f test_data_*.bin test_file.locked important.crypto normal_file.txt
+	rm -rf /tmp/slowburn_* /tmp/bigbang_* /tmp/rename_* /tmp/chmod_*
+	rm -rf /tmp/compile_* /tmp/grep_* /tmp/backup_src_* /tmp/backup_dst_*

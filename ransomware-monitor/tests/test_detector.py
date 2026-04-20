@@ -12,8 +12,10 @@ Covers:
 """
 
 import json
+import logging
 import math
 import os
+import signal as signal_mod
 import tempfile
 import time
 import types
@@ -1482,6 +1484,186 @@ class TestLegitEncryptionVsRansomware(unittest.TestCase):
             if a["reason"] in ("In-place overwrite", "Write-then-delete")
         ]
         self.assertEqual(len(bad_alerts), 0)
+
+
+# ---------------------------------------------------------------------------
+# 14. Chmod / Chown Detection Tests
+# ---------------------------------------------------------------------------
+
+class TestChmodChownDetection(unittest.TestCase):
+    """Verify that rapid chmod/chown calls trigger alerts."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=10.0, threshold_chmod=3,
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_rapid_chmod_triggers_alert(self):
+        det = self._det()
+        for i in range(5):
+            evt = _make_event(5, 18000, "evil", f"/home/user/f{i}.txt", 0, b"")
+            det.analyze_event(evt)
+        chmod_alerts = [a for a in det.alerts if "chmod" in a["reason"]]
+        self.assertGreater(len(chmod_alerts), 0)
+
+    def test_rapid_chown_triggers_alert(self):
+        det = self._det()
+        for i in range(5):
+            evt = _make_event(6, 18001, "evil", f"/home/user/f{i}.txt", 0, b"")
+            det.analyze_event(evt)
+        chown_alerts = [a for a in det.alerts if "chown" in a["reason"]]
+        self.assertGreater(len(chown_alerts), 0)
+
+    def test_few_chmod_no_alert(self):
+        det = self._det(threshold_chmod=10)
+        for i in range(3):
+            evt = _make_event(5, 18002, "installer", f"/opt/app/f{i}", 0, b"")
+            det.analyze_event(evt)
+        chmod_alerts = [a for a in det.alerts if "chmod" in a["reason"]]
+        self.assertEqual(len(chmod_alerts), 0)
+
+    def test_whitelisted_process_chmod_no_alert(self):
+        det = self._det()
+        for i in range(10):
+            evt = _make_event(5, 18003, "dpkg", f"/usr/bin/tool{i}", 0, b"")
+            det.analyze_event(evt)
+        self.assertEqual(len(det.alerts), 0)
+
+
+# ---------------------------------------------------------------------------
+# 15. Action Mode Tests
+# ---------------------------------------------------------------------------
+
+class TestActionModes(unittest.TestCase):
+    """Verify simulate, suspend, and kill action modes."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=10.0,
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_simulate_mode_does_not_send_signal(self):
+        det = self._det(action_mode="simulate")
+        with mock.patch("os.kill") as mock_kill:
+            det.take_action(99999, "test", "test reason")
+            mock_kill.assert_not_called()
+
+    def test_suspend_mode_sends_sigstop(self):
+        det = self._det(action_mode="suspend")
+        with mock.patch("os.kill") as mock_kill:
+            det.take_action(99999, "test", "test reason")
+            mock_kill.assert_called_once_with(99999, signal_mod.SIGSTOP)
+
+    def test_kill_mode_sends_sigkill(self):
+        det = self._det(action_mode="kill")
+        with mock.patch("os.kill") as mock_kill:
+            det.take_action(99999, "test", "test reason")
+            mock_kill.assert_called_once_with(99999, signal_mod.SIGKILL)
+
+    def test_default_mode_is_simulate(self):
+        det = self._det()
+        self.assertEqual(det.action_mode, "simulate")
+
+
+# ---------------------------------------------------------------------------
+# 16. Structured Logging Tests
+# ---------------------------------------------------------------------------
+
+class TestStructuredLogging(unittest.TestCase):
+    """Verify that alerts are emitted as JSON log lines."""
+
+    def test_alert_contains_json_fields(self):
+        det = RansomwareDetector(
+            verify_binary_hash=False, verify_lineage=False,
+        )
+        alert = det._record_alert(1234, "evil", "Test reason", severity="high")
+        self.assertIn("pid", alert)
+        self.assertIn("comm", alert)
+        self.assertIn("reason", alert)
+        self.assertIn("severity", alert)
+        self.assertIn("timestamp", alert)
+        # Verify it's JSON-serializable
+        json_str = json.dumps(alert, default=str)
+        parsed = json.loads(json_str)
+        self.assertEqual(parsed["pid"], 1234)
+        self.assertEqual(parsed["reason"], "Test reason")
+
+    def test_alert_written_to_log_file(self):
+        import tempfile
+        from detector import setup_logging
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False
+        ) as fh:
+            log_path = fh.name
+        try:
+            setup_logging(json_path=log_path)
+            det = RansomwareDetector(
+                verify_binary_hash=False, verify_lineage=False,
+            )
+            det._record_alert(5678, "test_proc", "Log test", severity="medium")
+            # Flush handlers
+            for handler in logging.getLogger("ransomware_monitor").handlers:
+                handler.flush()
+            with open(log_path, "r") as fh:
+                lines = fh.readlines()
+            self.assertGreater(len(lines), 0)
+            parsed = json.loads(lines[-1])
+            self.assertEqual(parsed["pid"], 5678)
+            self.assertEqual(parsed["reason"], "Log test")
+        finally:
+            os.unlink(log_path)
+            setup_logging()  # Reset to default
+
+
+# ---------------------------------------------------------------------------
+# 17. Snapshot Integration Tests
+# ---------------------------------------------------------------------------
+
+class TestSnapshotIntegration(unittest.TestCase):
+    """Verify filesystem snapshot triggering on critical alerts."""
+
+    def test_snapshot_triggered_on_critical_alert(self):
+        det = RansomwareDetector(
+            verify_binary_hash=False, verify_lineage=False,
+            action_mode="simulate",
+            snapshot_cmd="echo snapshot_taken",
+        )
+        # Record a critical alert first
+        det._record_alert(9999, "evil", "Test", severity="critical")
+        with mock.patch("subprocess.run") as mock_run:
+            det.take_action(9999, "evil", "Test")
+            mock_run.assert_called_once()
+            self.assertIn("echo snapshot_taken", str(mock_run.call_args))
+
+    def test_snapshot_only_triggered_once(self):
+        det = RansomwareDetector(
+            verify_binary_hash=False, verify_lineage=False,
+            action_mode="simulate",
+            snapshot_cmd="echo snapshot",
+        )
+        det._record_alert(9999, "evil", "Test", severity="critical")
+        with mock.patch("subprocess.run") as mock_run:
+            det.take_action(9999, "evil", "Test")
+            det.take_action(9999, "evil", "Test again")
+            # Should only be called once
+            mock_run.assert_called_once()
+
+    def test_no_snapshot_without_cmd(self):
+        det = RansomwareDetector(
+            verify_binary_hash=False, verify_lineage=False,
+            action_mode="simulate",
+            snapshot_cmd=None,
+        )
+        det._record_alert(9999, "evil", "Test", severity="critical")
+        with mock.patch("subprocess.run") as mock_run:
+            det.take_action(9999, "evil", "Test")
+            mock_run.assert_not_called()
 
 
 if __name__ == "__main__":

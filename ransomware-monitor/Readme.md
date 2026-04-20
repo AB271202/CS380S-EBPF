@@ -277,31 +277,153 @@ The detector tracks recent high-entropy write targets per PID. When an UNLINK ev
 
 This threshold of 3 ensures that single-file compression (`gzip data.csv` → delete `data.csv`) passes silently, while bulk encrypt-then-delete operations are caught.
 
-### Running the Unit Tests
+### 12. Metadata Change Detection (chmod/chown)
 
-The false-positive reduction features are covered by `tests/test_detector.py` (113 tests). Run them with:
+The eBPF layer now hooks `fchmodat` and `fchownat` syscalls, sending `CHMOD` (type 5) and `CHOWN` (type 6) events to user space. Ransomware may use rapid `chmod 000` calls to lock users out of their own files before or after encryption.
+
+The detector tracks metadata-change frequency per PID. When `threshold_chmod` (default: 5) calls occur within the time window, a `"Rapid chmod"` or `"Rapid chown"` alert fires.
+
+---
+
+## Active Mitigation and Protection
+
+### Action Modes
+
+The `take_action` method supports three modes, selectable via `--action-mode`:
+
+| Mode | Signal | Use case |
+|------|--------|----------|
+| `simulate` | None | Testing and tuning — log only, no process impact |
+| `suspend` | `SIGSTOP` | Production — freeze the process for admin review |
+| `kill` | `SIGKILL` | High-confidence environments — terminate immediately |
 
 ```bash
+# Suspend mode (recommended for production)
+sudo python3 agent/main.py --action-mode suspend
+
+# To resume a suspended process after review:
+kill -CONT <PID>
+```
+
+### Automated Filesystem Snapshots
+
+On the **first critical-severity alert** in a session, the detector can automatically trigger a filesystem snapshot via a configurable shell command. This integrates with COW filesystems like Btrfs or ZFS for near-zero data loss.
+
+```bash
+# Btrfs example
+sudo python3 agent/main.py --action-mode suspend \
+    --snapshot-cmd "btrfs subvolume snapshot -r /home /home/.snapshots/ransomware-$(date +%s)"
+
+# ZFS example
+sudo python3 agent/main.py --action-mode suspend \
+    --snapshot-cmd "zfs snapshot tank/home@ransomware-$(date +%s)"
+```
+
+The snapshot is triggered only once per session to avoid flooding the filesystem with snapshots during a sustained attack.
+
+---
+
+## Operationalization
+
+### Structured JSON Logging
+
+All alerts are emitted as structured JSON objects via Python's `logging` module. Set the `RANSOMWARE_MONITOR_LOG` environment variable to write JSON-lines to a file for SIEM ingestion:
+
+```bash
+export RANSOMWARE_MONITOR_LOG=/var/log/ransomware-monitor/alerts.jsonl
+sudo python3 agent/main.py
+```
+
+Each log line is a JSON object:
+```json
+{"pid": 1234, "comm": "evil", "reason": "Magic bytes destroyed", "severity": "critical", "timestamp": 1713520000.0, "entropy": 6.8, "filename": "/home/user/photo.jpg"}
+```
+
+### Configuration File
+
+A single JSON configuration file controls all tunable parameters. See `config.example.json` for the full schema:
+
+```bash
+sudo python3 agent/main.py --config /etc/ransomware-monitor/config.json
+```
+
+### Systemd Integration
+
+A systemd service unit is provided for production deployment:
+
+```bash
+# Install the service
+make install-service
+
+# Start / stop / status
+sudo systemctl start ransomware-monitor
+sudo systemctl status ransomware-monitor
+sudo journalctl -u ransomware-monitor -f
+
+# Uninstall
+make uninstall-service
+```
+
+The service runs in `suspend` mode by default, writes JSON logs to `/var/log/ransomware-monitor/alerts.jsonl`, and auto-restarts on failure.
+
+---
+
+## Testing and Validation
+
+### Ransomware Simulation Suite
+
+The `tests/simulate_ransomware.py` script provides controlled simulations of various ransomware variants and benign workloads:
+
+**Attack simulations:**
+```bash
+make test-entropy      # Big-bang high-entropy writes
+make test-unlink       # High-frequency file deletion
+make test-slowburn     # Slow, stealthy encryption
+make test-bigbang      # Rapid multi-directory encryption + rename
+make test-rename       # Rename-only attack (.locked, .crypto)
+make test-chmod        # Rapid chmod lockout
+make test-all-attacks  # Run all attack simulations
+```
+
+**False-positive workloads:**
+```bash
+make test-compile      # Simulated C++ compilation (many .o files)
+make test-grep         # Simulated recursive grep
+make test-backup       # Simulated rsync-like backup
+make test-all-benign   # Run all benign workloads
+```
+
+### Running the Unit Tests
+
+The detection engine is covered by `tests/test_detector.py` (126 tests). Run them with:
+
+```bash
+make unit-test
+# or
 python3 -m unittest tests/test_detector.py -v
 ```
 
 Test categories:
-- **TestProcessWhitelist** — verifies trusted processes are silent, unknown processes still alert, config loading, and error handling.
-- **TestBinaryHashVerification** — SHA-256 computation, matching/mismatched hashes, open trust when no hashes registered, caching, end-to-end tampered binary detection, config loading.
-- **TestProcessLineageValidation** — trusted/untrusted parent chains, empty lineage handling, caching, end-to-end untrusted lineage detection, custom parents, config loading, smoke test on real PID.
-- **TestHashAndLineageCombined** — both-pass, hash-pass/lineage-fail, hash-fail/lineage-pass, both-fail scenarios.
-- **TestCanaryFiles** — canary deployment, critical alerts on access, whitelisted-process canary access still alerts, non-canary files are not flagged.
-- **TestMagicByteAnalysis** — magic-byte identification for PDF/PNG/JPEG/ZIP, destroyed-header detection, end-to-end WRITE event triggering critical alerts.
-- **TestWriteTargetClassification** — system paths (`/dev/`, `/proc/`, `/var/lib/`) excluded, user paths (`/home/`, `/srv/`) included, end-to-end defrag and database silence.
-- **TestFileDiversityScoring** — diverse writes across directories trigger alerts, single-directory writes do not, low-entropy diverse writes do not, defragmenter repeated writes do not.
-- **TestDirectoryTraversalDetection** — scan + write triggers alert, scan-only does not, below-threshold does not, time-window expiry works.
-- **TestDefragVsRansomware** — end-to-end scenarios: block-device defrag (no alerts), single-file defrag (no alerts), multi-directory ransomware encryption (alert), scan-then-encrypt (alert), database writes (no alerts).
-- **TestInPlaceOverwriteDetection** — overwriting an opened file with high-entropy data triggers alert, writing to new files does not, low-entropy overwrites do not, legitimate .gz output does not.
-- **TestOutputPathCorrelation** — `.gz`, `.gpg`, `.xz`, `.enc`, `.zip` base-name matches are legitimate; `.locked`, random extensions, unrelated names are not.
-- **TestWriteThenUnlinkCorrelation** — writing to 3+ files then deleting a different file triggers alert, deleting own write target does not, single-file gzip pattern does not, low-entropy writes do not, time-window expiry works.
-- **TestLegitEncryptionVsRansomware** — end-to-end: gzip single file (no alerts), gpg encrypt (no alerts), zip archive (no alerts), tar|gzip pipeline (no alerts), ransomware in-place encrypt (alert), ransomware encrypt-then-delete (alert).
-- **TestEntropyCalculation** — entropy edge cases (empty, uniform, random, max).
-- **TestHighEntropyWriteDetection** — frequency + entropy burst detection regression.
-- **TestSuspiciousExtensionDetection** — OPEN/RENAME with `.locked`/`.crypto` extensions.
+- **TestProcessWhitelist** — whitelist behavior, config loading, error handling.
+- **TestBinaryHashVerification** — SHA-256 computation, matching/mismatched hashes, open trust, caching, end-to-end.
+- **TestProcessLineageValidation** — trusted/untrusted parents, caching, end-to-end, custom parents, config loading.
+- **TestHashAndLineageCombined** — both-pass, hash-pass/lineage-fail, hash-fail/lineage-pass, both-fail.
+- **TestCanaryFiles** — deployment, critical alerts, whitelisted access, non-canary files.
+- **TestMagicByteAnalysis** — magic-byte identification, destroyed-header detection, end-to-end WRITE events.
+- **TestWriteTargetClassification** — system paths excluded, user paths included, end-to-end scenarios.
+- **TestFileDiversityScoring** — diverse writes, single-dir writes, low-entropy, defrag vs ransomware.
+- **TestDirectoryTraversalDetection** — scan + write, scan-only, threshold, time-window expiry.
+- **TestDefragVsRansomware** — block device, single file, multi-dir encryption, scan-then-encrypt, database.
+- **TestInPlaceOverwriteDetection** — overwrite opened file, new file, low-entropy, legitimate .gz.
+- **TestOutputPathCorrelation** — legitimate suffixes, ransomware extensions.
+- **TestWriteThenUnlinkCorrelation** — write multiple then delete, delete own target, single file, time-window.
+- **TestLegitEncryptionVsRansomware** — gzip, gpg, zip, tar|gzip (no alerts), ransomware in-place and encrypt-then-delete (alerts).
+- **TestChmodChownDetection** — rapid chmod/chown triggers alerts, below threshold does not, whitelisted processes silent.
+- **TestActionModes** — simulate sends no signal, suspend sends SIGSTOP, kill sends SIGKILL.
+- **TestStructuredLogging** — alerts contain JSON fields, alerts written to log file.
+- **TestSnapshotIntegration** — snapshot triggered on critical alert, only once, not without config.
+- **TestEntropyCalculation** — entropy edge cases.
+- **TestHighEntropyWriteDetection** — frequency + entropy burst detection.
+- **TestSuspiciousExtensionDetection** — OPEN/RENAME with suspicious extensions.
 - **TestUnlinkDetection** — high-frequency deletion alerts and time-window expiry.
-- **TestCombinedScenarios** — realistic multi-signal scenarios: gcc compilation (no alerts), rsync mass-delete (no alerts), full ransomware attack chain (multiple alerts).
+- **TestCombinedScenarios** — gcc compilation, rsync mass-delete, full ransomware chain.
