@@ -8,3 +8,4 @@ out.txt
 *.log
 *.out
 *.synctex.gz
+./WSL2-Linux-Kernel
