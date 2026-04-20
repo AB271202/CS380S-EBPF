@@ -720,6 +720,36 @@ class RansomwareDetector:
     # Entropy calculation
     # ------------------------------------------------------------------
 
+    def emit_alert(
+        self,
+        alert_type,
+        pid,
+        comm,
+        reason,
+        filename="",
+        extension="",
+        avg_entropy=None,
+        write_count=None,
+    ):
+        if not self.alert_json:
+            return
+        payload = {
+            "ts": time.time(),
+            "run_id": self.run_id,
+            "alert_type": alert_type,
+            "pid": int(pid),
+            "comm": comm,
+            "reason": reason,
+            "filename": filename,
+        }
+        if extension:
+            payload["extension"] = extension
+        if avg_entropy is not None:
+            payload["avg_entropy"] = float(avg_entropy)
+        if write_count is not None:
+            payload["write_count"] = int(write_count)
+        print(f"{self.alert_json_prefix}:{json.dumps(payload, sort_keys=True)}", flush=True)
+
     def calculate_entropy(self, data):
         if not data:
             return 0

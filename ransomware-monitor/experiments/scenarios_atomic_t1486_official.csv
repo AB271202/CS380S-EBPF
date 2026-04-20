@@ -1,0 +1,5 @@
+id,label,source,variant,family,expected_comm,command,notes
+pos_atomic_t1486_gpg_official,positive,atomic,official,gpg,gpg,bash "$REPO_ROOT/experiments/workloads/t1486_atomic_official.sh" --test gpg --root atomic_t1486_gpg_official,Faithful sandboxed Atomic GPG T1486 command
+pos_atomic_t1486_7z_official,positive,atomic,official,7z,7z,bash "$REPO_ROOT/experiments/workloads/t1486_atomic_official.sh" --test 7z --root atomic_t1486_7z_official,Faithful sandboxed Atomic 7z T1486 command
+pos_atomic_t1486_ccrypt_official,positive,atomic,official,ccrypt,ccencrypt,bash "$REPO_ROOT/experiments/workloads/t1486_atomic_official.sh" --test ccrypt --root atomic_t1486_ccrypt_official,Faithful sandboxed Atomic ccrypt T1486 command
+pos_atomic_t1486_openssl_official,positive,atomic,official,openssl,openssl,bash "$REPO_ROOT/experiments/workloads/t1486_atomic_official.sh" --test openssl --root atomic_t1486_openssl_official,Faithful sandboxed Atomic OpenSSL T1486 command

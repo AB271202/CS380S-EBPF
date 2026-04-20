@@ -24,8 +24,48 @@ mount:
 # Note: This assumes a Debian/Ubuntu-based system.
 deps:
 	sudo apt-get update
-	sudo apt-get install -y bpfcc-tools linux-headers-$(uname -r) python3-bpfcc
-	pip3 install -r requirements.txt
+	if grep -qi microsoft /proc/version; then \
+		echo "WSL detected: skipping linux-headers-$$(uname -r) from apt."; \
+		echo "Use WSL2 kernel source + modules_prepare for matching build headers."; \
+		sudo apt-get install -y bpfcc-tools python3-bpfcc python3-pip; \
+	else \
+		sudo apt-get install -y bpfcc-tools linux-headers-$$(uname -r) python3-bpfcc python3-pip; \
+	fi
+	python3 -m pip install -r requirements.txt
+
+exp-run:
+	sudo -E python3 experiments/run_experiments.py --scenarios experiments/scenarios.csv --output-dir experiments/out/latest --repeats 3
+
+exp-metrics:
+	python3 experiments/metrics.py --results experiments/out/latest/results.csv
+
+exp-metrics-json:
+	python3 experiments/metrics.py --results experiments/out/latest/results.csv --json-out experiments/out/latest/metrics.json
+
+exp-atomic-deps:
+	sudo apt-get update
+	sudo apt-get install -y gnupg p7zip-full ccrypt openssl
+
+exp-run-atomic-t1486-official:
+	sudo -E python3 experiments/run_experiments.py --scenarios experiments/scenarios_atomic_t1486_official.csv --output-dir experiments/out/atomic_t1486_official --repeats 3
+
+exp-metrics-atomic-official:
+	python3 experiments/metrics.py --results experiments/out/atomic_t1486_official/results.csv
+
+exp-run-tuned-both:
+	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios.csv --output-dir experiments/out/legacy_tuned --repeats 3
+	sudo -E THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0 python3 experiments/run_experiments.py --scenarios experiments/scenarios_atomic_t1486_official.csv --output-dir experiments/out/atomic_t1486_official_tuned --repeats 3
+	sudo -E python3 experiments/combine_results.py --output experiments/out/tuned_combined/results.csv experiments/out/legacy_tuned/results.csv experiments/out/atomic_t1486_official_tuned/results.csv
+	sudo chown -R $$(id -u):$$(id -g) experiments/out/tuned_combined
+	@echo ""
+	@echo "Legacy Metrics"
+	python3 experiments/metrics.py --results experiments/out/legacy_tuned/results.csv
+	@echo ""
+	@echo "Official Atomic Metrics"
+	python3 experiments/metrics.py --results experiments/out/atomic_t1486_official_tuned/results.csv
+	@echo ""
+	@echo "Combined Metrics"
+	python3 experiments/metrics.py --results experiments/out/tuned_combined/results.csv
 
 # --- Unit Tests ---
 
