@@ -81,10 +81,6 @@ static __always_inline int trace_open(struct pt_regs *ctx, const char *filename,
     bpf_probe_read_kernel(&fname.s, sizeof(fname.s), event->filename);
     fd_to_filename.update(&pid_tgid, &fname);
 
-    if (!(flags & O_CREAT)) {
-        return 0;
-    }
-
     events.perf_submit(ctx, event, sizeof(*event));
     return 0;
 }

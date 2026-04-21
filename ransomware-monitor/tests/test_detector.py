@@ -66,7 +66,7 @@ class TestProcessWhitelist(unittest.TestCase):
         )
 
     def test_default_whitelist_contains_common_tools(self):
-        for proc in ("git", "gcc", "apt", "rsync", "vim", "postgres"):
+        for proc in ("git", "gcc", "apt", "rsync", "vim", "postgres", "gpg"):
             self.assertTrue(
                 self.detector.is_whitelisted(proc),
                 f"{proc} should be whitelisted by default",
@@ -81,6 +81,13 @@ class TestProcessWhitelist(unittest.TestCase):
         for i in range(20):
             evt = _make_event(1, 1000, "gcc", f"/tmp/obj_{i}.o", 128, high_entropy_buf)
             self.detector.analyze_event(evt)
+        self.assertEqual(len(self.detector.alerts), 0)
+
+    def test_whitelisted_gpg_write_generates_no_alert(self):
+        """A default-whitelisted gpg process should stay silent on writes."""
+        high_entropy_buf = os.urandom(128)
+        evt = _make_event(1, 1004, "gpg", "/home/user/secret.txt.gpg", 128, high_entropy_buf)
+        self.detector.analyze_event(evt)
         self.assertEqual(len(self.detector.alerts), 0)
 
     def test_whitelisted_process_unlink_generates_no_alert(self):

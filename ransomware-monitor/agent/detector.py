@@ -42,7 +42,7 @@ DEFAULT_WHITELISTED_PROCESSES = {
     "gcc", "g++", "cc1", "cc1plus", "as", "ld", "make", "cmake", "ninja",
     "rustc", "javac", "clang", "clang++",
     # Backup / sync
-    "rsync", "rclone", "tar", "gzip", "bzip2", "xz", "zstd", "ccencrypt",
+    "rsync", "rclone", "tar", "gzip", "bzip2", "xz", "zstd", "ccencrypt", "gpg",
     # System services
     "systemd", "journald", "systemd-journa", "logrotate", "cron", "anacron",
     "sshd", "dbus-daemon",
@@ -1198,11 +1198,9 @@ class RansomwareDetector:
 
         if event.type == 0:  # OPEN
             # Track opened files for in-place overwrite detection.
-            # The eBPF layer only emits OPEN events for O_CREAT, but we
-            # record the filename anyway so that the fd_to_filename map
-            # correlation in the WRITE handler can be cross-referenced.
-            # For non-O_CREAT opens (tracked via fd_to_filename in BPF),
-            # we rely on the write-path not being a new file.
+            # The eBPF layer emits OPEN events for ordinary opens as well
+            # as creations, so this tracker can now observe pre-existing
+            # files that are later overwritten in place.
             self.open_tracker[pid][filename] = now
 
             _, ext = os.path.splitext(filename)

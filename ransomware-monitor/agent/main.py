@@ -18,6 +18,20 @@ EVENT_TYPES = {
 
 DEFAULT_PERF_PAGE_CNT = 4096
 
+
+def _env_flag(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_path_list(raw):
+    if not raw:
+        return []
+    normalized = raw.replace(";", ",").replace(":", ",")
+    return [part.strip() for part in normalized.split(",") if part.strip()]
+
 def main():
     parser = argparse.ArgumentParser(description="Ransomware monitor")
     parser.add_argument(
@@ -48,6 +62,42 @@ def main():
         action="store_true",
         help="Block network access for flagged processes via iptables",
     )
+    parser.add_argument(
+        "--whitelist-config",
+        type=str,
+        default=os.getenv("WHITELIST_CONFIG"),
+        help=(
+            "JSON config file for whitelisted processes, trusted hashes, "
+            "and trusted parents (default: $WHITELIST_CONFIG)"
+        ),
+    )
+    parser.add_argument(
+        "--canary-dir",
+        action="append",
+        default=None,
+        help=(
+            "Directory where canary files should be deployed. "
+            "Repeat the flag to add multiple directories."
+        ),
+    )
+    parser.add_argument(
+        "--disable-binary-hash-verification",
+        action="store_true",
+        default=_env_flag("DISABLE_BINARY_HASH_VERIFICATION", False),
+        help=(
+            "Skip whitelist binary-hash verification "
+            "(default can also be set via $DISABLE_BINARY_HASH_VERIFICATION)"
+        ),
+    )
+    parser.add_argument(
+        "--disable-lineage-verification",
+        action="store_true",
+        default=_env_flag("DISABLE_LINEAGE_VERIFICATION", False),
+        help=(
+            "Skip whitelist lineage verification "
+            "(default can also be set via $DISABLE_LINEAGE_VERIFICATION)"
+        ),
+    )
     args = parser.parse_args()
 
     if os.geteuid() != 0:
@@ -66,11 +116,20 @@ def main():
         print(f"Failed to load BPF program: {e}")
         sys.exit(1)
 
+    canary_dirs = list(args.canary_dir or [])
+    canary_dirs.extend(_split_path_list(os.getenv("CANARY_DIRS", "")))
+    if canary_dirs:
+        canary_dirs = list(dict.fromkeys(canary_dirs))
+
     detector = RansomwareDetector(
         action_mode=args.action_mode,
         snapshot_cmd=args.snapshot_cmd,
         quarantine_dir=args.quarantine_dir,
         enable_network_isolation=args.enable_network_isolation,
+        whitelist_config=args.whitelist_config,
+        canary_dirs=canary_dirs or None,
+        verify_binary_hash=not args.disable_binary_hash_verification,
+        verify_lineage=not args.disable_lineage_verification,
     )
 
     def print_event(cpu, data, size):
