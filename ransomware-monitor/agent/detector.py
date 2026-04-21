@@ -9,6 +9,7 @@ import stat
 import subprocess
 import time
 import json
+from typing import Dict, List, Optional, Set, Tuple
 
 
 # Well-known magic bytes for common file types.
@@ -43,7 +44,7 @@ DEFAULT_WHITELISTED_PROCESSES = {
     "gcc", "g++", "cc1", "cc1plus", "as", "ld", "make", "cmake", "ninja",
     "rustc", "javac", "clang", "clang++",
     # Backup / sync
-    "rsync", "rclone", "tar", "gzip", "bzip2", "xz", "zstd",
+    "rsync", "rclone", "tar", "gzip", "bzip2", "xz", "zstd", "ccencrypt",
     # System services
     "systemd", "journald", "systemd-journa", "logrotate", "cron", "anacron",
     "sshd", "dbus-daemon",
@@ -175,6 +176,12 @@ class RansomwareDetector:
                 time_window if time_window is not None else 1.0,
             )
         )
+        self.attribution_window = float(
+            os.getenv(
+                "ATTRIBUTION_WINDOW_SEC",
+                max(self.time_window, 10.0),
+            )
+        )
         self.alert_json = os.getenv("ALERT_JSON", "0") == "1"
         self.alert_json_prefix = os.getenv("ALERT_JSON_PREFIX", "ALERT_JSON")
         self.run_id = os.getenv("RUN_ID", "")
@@ -207,10 +214,10 @@ class RansomwareDetector:
         self.dir_scan_stats = collections.defaultdict(list)
         # open_tracker: { pid: {filename: timestamp, ...} }
         # Tracks files opened (not created) for in-place overwrite detection.
-        self.open_tracker: dict[int, dict[str, float]] = collections.defaultdict(dict)
+        self.open_tracker: Dict[int, Dict[str, float]] = collections.defaultdict(dict)
         # write_targets: { pid: [(timestamp, source_file, dest_file), ...] }
         # Tracks recent high-entropy write targets for unlink correlation.
-        self.write_targets: dict[int, list[tuple[float, str]]] = collections.defaultdict(list)
+        self.write_targets: Dict[int, List[Tuple[float, str]]] = collections.defaultdict(list)
         self.suspicious_extensions = {
             ".locked", ".crypto", ".encrypted", ".onion", ".lck", ".temp", ".cl0p",
         }
@@ -221,25 +228,29 @@ class RansomwareDetector:
         self.whitelisted_processes = set(DEFAULT_WHITELISTED_PROCESSES)
 
         # 2. Canary files
-        self.canary_paths: set[str] = set()
+        self.canary_paths: Set[str] = set()
         if canary_dirs:
             for d in canary_dirs:
                 self.deploy_canaries(d)
 
         # 3. Binary hash verification
         self.verify_binary_hash = verify_binary_hash
-        self.trusted_hashes: dict[str, set[str]] = {}
+        self.trusted_hashes: Dict[str, Set[str]] = {}
         if trusted_hashes:
             for path, hashes in trusted_hashes.items():
                 if isinstance(hashes, str):
                     hashes = [hashes]
                 self.trusted_hashes[path] = set(hashes)
-        self._hash_cache: dict[tuple[int, str], str] = {}
+        self._hash_cache: Dict[Tuple[int, str], str] = {}
+        self._parent_pid_cache: Dict[int, Optional[int]] = {}
+        self._comm_cache: Dict[int, str] = {}
+        self._pid_identity_cache: Dict[int, Tuple[float, str]] = {}
 
         # 4. Process lineage validation
         self.verify_lineage = verify_lineage
-        self.trusted_parents: set[str] = trusted_parents if trusted_parents is not None else {
+        self.trusted_parents: Set[str] = trusted_parents if trusted_parents is not None else {
             "bash", "sh", "zsh", "fish", "dash",
+            "python", "python3",
             "sshd", "login", "su", "sudo",
             "systemd", "init",
             "make", "cmake", "ninja",
@@ -247,14 +258,14 @@ class RansomwareDetector:
             "screen", "tmux",
             "docker", "containerd", "containerd-shim",
         }
-        self._lineage_cache: dict[int, bool] = {}
+        self._lineage_cache: Dict[int, bool] = {}
 
         # Load all config from a single file (whitelist, hashes, parents)
         if whitelist_config:
             self._load_config(whitelist_config)
 
         # Alerts list – useful for programmatic inspection in tests.
-        self.alerts: list[dict] = []
+        self.alerts: List[dict] = []
 
         # --- Response configuration ---
         # "simulate" = log only, "suspend" = SIGSTOP, "kill" = full EDR chain
@@ -264,9 +275,9 @@ class RansomwareDetector:
         self.quarantine_dir = quarantine_dir or "/var/lib/ransomware-monitor/quarantine"
         self.enable_network_isolation = enable_network_isolation
         # Track quarantined binaries for the blocklist
-        self.blocklist: set[str] = set()
+        self.blocklist: Set[str] = set()
         # Track files modified by flagged PIDs for remediation
-        self._pid_modified_files: dict[int, list[str]] = collections.defaultdict(list)
+        self._pid_modified_files: Dict[int, List[str]] = collections.defaultdict(list)
 
     # ------------------------------------------------------------------
     # Whitelist helpers
@@ -338,6 +349,14 @@ class RansomwareDetector:
     # ------------------------------------------------------------------
     # Binary hash verification helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_cstring(value):
+        """Decode a NUL-padded C string from BPF/perf event fields."""
+        if isinstance(value, bytes):
+            value = value.split(b"\x00", 1)[0]
+            return value.decode("utf-8", "replace")
+        return str(value)
 
     @staticmethod
     def _resolve_exe(pid):
@@ -428,6 +447,23 @@ class RansomwareDetector:
         except OSError:
             return None
 
+    def get_parent_pid(self, pid):
+        """Read and cache the parent PID for *pid*."""
+        if pid in self._parent_pid_cache:
+            return self._parent_pid_cache[pid]
+        parent = self._get_ppid(pid)
+        self._parent_pid_cache[pid] = parent
+        return parent
+
+    def _read_proc_comm(self, pid):
+        """Read and cache the comm for *pid*."""
+        if pid in self._comm_cache:
+            return self._comm_cache[pid]
+        comm = self._get_comm(pid)
+        if comm is not None:
+            self._comm_cache[pid] = comm
+        return comm
+
     def get_process_lineage(self, pid, max_depth=10):
         """Walk the parent chain and return a list of ``(pid, comm)`` tuples.
 
@@ -436,15 +472,148 @@ class RansomwareDetector:
         lineage = []
         current = pid
         for _ in range(max_depth):
-            ppid = self._get_ppid(current)
+            ppid = self.get_parent_pid(current)
             if ppid is None or ppid == 0:
                 break
-            parent_comm = self._get_comm(ppid)
+            parent_comm = self._read_proc_comm(ppid)
             lineage.append((ppid, parent_comm))
             if ppid == 1:
                 break
             current = ppid
         return lineage
+
+    def _has_active_behavioral_profile(self, pid, now):
+        """Return True if *pid* has recent behavioral state.
+
+        We treat recent write, scan, unlink, or open-tracker state as an
+        "active profile" so delegated child writes can be attributed to an
+        orchestrator that is already interacting with the filesystem.
+        """
+        process_entries = [
+            e for e in self.process_stats.get(pid, [])
+            if now - e[0] <= self.attribution_window
+        ]
+        if process_entries:
+            self.process_stats[pid] = process_entries
+            return True
+        if pid in self.process_stats:
+            self.process_stats[pid] = process_entries
+
+        scan_entries = [
+            e for e in self.dir_scan_stats.get(pid, [])
+            if now - e[0] <= self.attribution_window
+        ]
+        if scan_entries:
+            self.dir_scan_stats[pid] = scan_entries
+            return True
+        if pid in self.dir_scan_stats:
+            self.dir_scan_stats[pid] = scan_entries
+
+        unlink_entries = [
+            t for t in self.unlink_stats.get(pid, [])
+            if now - t <= self.attribution_window
+        ]
+        if unlink_entries:
+            self.unlink_stats[pid] = unlink_entries
+            return True
+        if pid in self.unlink_stats:
+            self.unlink_stats[pid] = unlink_entries
+
+        opened = {
+            path: ts for path, ts in self.open_tracker.get(pid, {}).items()
+            if now - ts <= self.attribution_window
+        }
+        if opened:
+            self.open_tracker[pid] = opened
+            return True
+        if pid in self.open_tracker:
+            self.open_tracker[pid] = opened
+
+        return False
+
+    def _remember_behavioral_identity(self, pid, comm, now):
+        """Remember the last recent non-whitelisted identity for *pid*."""
+        if comm in self.whitelisted_processes:
+            return
+        self._pid_identity_cache[pid] = (now, comm)
+
+    def _get_recent_behavioral_identity(self, pid, now):
+        """Return the recent non-whitelisted identity for *pid*, if any."""
+        entry = self._pid_identity_cache.get(pid)
+        if not entry:
+            return None
+        timestamp, comm = entry
+        if now - timestamp > self.attribution_window:
+            self._pid_identity_cache.pop(pid, None)
+            return None
+        return comm
+
+    def _find_attributable_ancestor(self, pid, now=None, direct_parent_pid=None):
+        """Find the nearest non-whitelisted ancestor with live behavioral state."""
+        if now is None:
+            now = time.time()
+
+        current = pid
+        next_parent = direct_parent_pid
+        for _ in range(5):
+            parent = next_parent if next_parent is not None else self.get_parent_pid(current)
+            next_parent = None
+            if parent is None or parent <= 1:
+                return None
+            parent_comm = self._read_proc_comm(parent)
+            if not parent_comm:
+                return None
+            if (
+                not self.is_whitelisted(parent_comm, pid=parent)
+                and self._has_active_behavioral_profile(parent, now)
+            ):
+                return parent
+            current = parent
+        return None
+
+    def _find_attributable_subject(self, pid, now=None, direct_parent_pid=None):
+        """Find the best process identity to receive a trusted child's write.
+
+        Preference order:
+        1. Parent orchestrator, when a freshly-forked helper PID recently
+           carried the same non-whitelisted identity before exec.
+        2. Nearest non-whitelisted ancestor with recent behavioral state.
+        """
+        if now is None:
+            now = time.time()
+
+        current_identity = self._get_recent_behavioral_identity(pid, now)
+        if current_identity:
+            parent_pid = (
+                direct_parent_pid
+                if direct_parent_pid is not None
+                else self.get_parent_pid(pid)
+            )
+            if parent_pid is not None and parent_pid > 1:
+                parent_identity = (
+                    self._get_recent_behavioral_identity(parent_pid, now)
+                    or self._read_proc_comm(parent_pid)
+                )
+                if (
+                    parent_identity == current_identity
+                    and parent_identity not in self.whitelisted_processes
+                ):
+                    return parent_pid, current_identity, "process_tree"
+
+        ancestor_pid = self._find_attributable_ancestor(
+            pid,
+            now=now,
+            direct_parent_pid=direct_parent_pid,
+        )
+        if ancestor_pid is None:
+            return None
+
+        ancestor_comm = (
+            self._get_recent_behavioral_identity(ancestor_pid, now)
+            or self._read_proc_comm(ancestor_pid)
+            or f"pid_{ancestor_pid}"
+        )
+        return ancestor_pid, ancestor_comm, "process_tree"
 
     def _verify_lineage(self, pid, comm):
         """Check that at least one ancestor of *pid* is a trusted parent.
@@ -469,6 +638,9 @@ class RansomwareDetector:
             return True
 
         parent_comms = {c for _, c in lineage if c is not None}
+        if not parent_comms:
+            self._lineage_cache[pid] = True
+            return True
         if parent_comms & self.trusted_parents:
             self._lineage_cache[pid] = True
             return True
@@ -716,19 +888,202 @@ class RansomwareDetector:
         self.emit_alert(pid, comm, reason, severity=severity, **extra)
         return alert
 
+    def _record_write_signal(self, pid, filename, entropy, now):
+        """Record a write sample so accumulated heuristics can inspect it."""
+        self.process_stats[pid].append((now, entropy, filename))
+        self.process_stats[pid] = [
+            e for e in self.process_stats[pid]
+            if now - e[0] <= self.time_window
+        ]
+        self._pid_modified_files[pid].append(filename)
+
+        if entropy > self.threshold_entropy:
+            self.write_targets[pid].append((now, filename))
+        self.write_targets[pid] = [
+            entry for entry in self.write_targets[pid]
+            if now - entry[0] <= self.time_window
+        ]
+
+    def _check_behavioral_heuristics(
+        self,
+        pid,
+        comm=None,
+        now=None,
+        attributed_from=None,
+        attribution_mode=None,
+    ):
+        """Run write-accumulation heuristics for *pid*.
+
+        When *attributed_from* is provided, the resulting alerts are tagged
+        so the operator can distinguish inherited child-write evidence from
+        direct writes by the alerted PID.
+        """
+        if now is None:
+            now = time.time()
+        if comm is None:
+            comm = self._read_proc_comm(pid) or f"pid_{pid}"
+
+        self.process_stats[pid] = [
+            e for e in self.process_stats.get(pid, [])
+            if now - e[0] <= self.time_window
+        ]
+        if not self.process_stats[pid]:
+            return None
+
+        extra = {}
+        suffix = ""
+        if attributed_from is not None:
+            child_pid, child_comm = attributed_from
+            extra.update(
+                {
+                    "attributed": True,
+                    "attributed_from_pid": child_pid,
+                    "attributed_from_comm": child_comm,
+                }
+            )
+            if attribution_mode is not None:
+                extra["attribution_mode"] = attribution_mode
+            suffix = f" (attributed from child {child_comm} PID {child_pid})"
+
+        unique_files, unique_dirs = self.get_file_diversity(pid)
+        if (
+            unique_files >= self.threshold_unique_files
+            and unique_dirs >= self.threshold_unique_dirs
+        ):
+            avg_entropy = sum(e[1] for e in self.process_stats[pid]) / len(
+                self.process_stats[pid]
+            )
+            if avg_entropy >= self.threshold_entropy:
+                print(
+                    f"[!!!] ALERT: Ransomware-like file diversity from "
+                    f"{comm} (PID {pid}){suffix}"
+                )
+                print(
+                    f"      {unique_files} unique files across "
+                    f"{unique_dirs} directories in {self.time_window}s "
+                    f"(avg entropy {avg_entropy:.2f})"
+                )
+                self._record_alert(
+                    pid, comm, "High file diversity + Entropy",
+                    severity="critical",
+                    unique_files=unique_files,
+                    unique_dirs=unique_dirs,
+                    avg_entropy=avg_entropy,
+                    **extra,
+                )
+                self.take_action(pid, comm, "High file diversity + Entropy")
+                return "diversity"
+
+        if len(self.process_stats[pid]) >= self.threshold_writes:
+            recent_files = {e[2] for e in self.process_stats[pid]}
+            if len(recent_files) < 2:
+                return None
+            avg_entropy = sum(e[1] for e in self.process_stats[pid]) / len(
+                self.process_stats[pid]
+            )
+            if avg_entropy >= self.threshold_entropy:
+                print(
+                    f"[!!!] ALERT: Potential ransomware behavior "
+                    f"from {comm} (PID {pid}){suffix}"
+                )
+                print(
+                    f"      High write frequency "
+                    f"({len(self.process_stats[pid])} in "
+                    f"{self.time_window}s) and high entropy "
+                    f"({avg_entropy:.2f})"
+                )
+                self._record_alert(
+                    pid, comm, "High entropy + Frequency",
+                    severity="high", avg_entropy=avg_entropy, **extra,
+                )
+                self.take_action(pid, comm, "High entropy + Frequency")
+                return "frequency"
+
+        return None
+
+    def _attribute_child_write(self, event, pid, comm, filename, now):
+        """Propagate a trusted child's write signal to an attributable ancestor."""
+        if not self.is_user_file(filename):
+            return False
+
+        direct_parent_pid = getattr(event, "ppid", 0) or self._parent_pid_cache.get(pid)
+        subject = self._find_attributable_subject(
+            pid,
+            now=now,
+            direct_parent_pid=direct_parent_pid,
+        )
+        if subject is None:
+            return False
+        subject_pid, subject_comm, attribution_mode = subject
+
+        sample_len = min(int(event.size), len(event.buffer))
+        if sample_len <= 0:
+            return False
+
+        entropy = self.calculate_entropy(bytes(event.buffer[:sample_len]))
+        self._record_write_signal(subject_pid, filename, entropy, now)
+        self._check_behavioral_heuristics(
+            subject_pid,
+            comm=subject_comm,
+            now=now,
+            attributed_from=(pid, comm),
+            attribution_mode=attribution_mode,
+        )
+        return True
+
+    def _should_suppress_whitelisted_helper(self, pid, now=None, direct_parent_pid=None):
+        """Return True when a trusted helper is acting under an attributable parent.
+
+        This keeps the helper itself quiet while allowing the parent
+        orchestrator to accumulate the delegated behavioral signal.
+        """
+        subject = self._find_attributable_subject(
+            pid,
+            now=now,
+            direct_parent_pid=direct_parent_pid,
+        )
+        return subject is not None and subject[0] != pid
+
     # ------------------------------------------------------------------
     # Core event analysis
     # ------------------------------------------------------------------
 
     def analyze_event(self, event):
         pid = event.pid
-        comm = event.comm.decode("utf-8", "replace")
-        filename = event.filename.decode("utf-8", "replace")
+        ppid = getattr(event, "ppid", 0) or None
+        comm = self._decode_cstring(event.comm)
+        filename = self._decode_cstring(event.filename)
         now = time.time()
+        if ppid is not None:
+            self._parent_pid_cache[pid] = ppid
+        self._comm_cache[pid] = comm
+        self._remember_behavioral_identity(pid, comm, now)
+        is_canary_access = self.is_canary(filename)
+
+        # Name-whitelisted helper tools stay quiet themselves, but their
+        # WRITE signals can be inherited by a non-whitelisted ancestor that
+        # is actively traversing or modifying the filesystem.
+        if (
+            event.type == 1
+            and comm in self.whitelisted_processes
+            and not is_canary_access
+        ):
+            if self._attribute_child_write(event, pid, comm, filename, now):
+                return
+
+        if (
+            comm in self.whitelisted_processes
+            and not is_canary_access
+            and self._should_suppress_whitelisted_helper(
+                pid,
+                now=now,
+                direct_parent_pid=ppid,
+            )
+        ):
+            return
 
         # --- Whitelist check (false-positive reduction) ---
         # Canary access from whitelisted processes is still flagged.
-        is_canary_access = self.is_canary(filename)
         if self.is_whitelisted(comm, pid=pid) and not is_canary_access:
             return
 
@@ -782,13 +1137,7 @@ class RansomwareDetector:
             sample_len = min(int(event.size), len(event.buffer))
             buffer_bytes = bytes(event.buffer[:sample_len])
             entropy = self.calculate_entropy(buffer_bytes)
-            self.process_stats[pid].append((now, entropy, filename))
-            self._pid_modified_files[pid].append(filename)
-
-            # Clean up old events outside the time window
-            self.process_stats[pid] = [
-                e for e in self.process_stats[pid] if now - e[0] <= self.time_window
-            ]
+            self._record_write_signal(pid, filename, entropy, now)
 
             # --- Magic-byte and in-place overwrite checks ---
             # Both require multi-file in-place overwrites to fire (single-
@@ -832,66 +1181,8 @@ class RansomwareDetector:
                     )
                     self.take_action(pid, comm, "In-place overwrite")
 
-            # Track this write for unlink correlation.
-            if entropy > self.threshold_entropy:
-                self.write_targets[pid].append((now, filename))
-
-            # --- File diversity scoring (false-positive reduction) ---
-            unique_files, unique_dirs = self.get_file_diversity(pid)
-            if (
-                unique_files >= self.threshold_unique_files
-                and unique_dirs >= self.threshold_unique_dirs
-            ):
-                avg_entropy = sum(e[1] for e in self.process_stats[pid]) / len(
-                    self.process_stats[pid]
-                )
-                if avg_entropy >= self.threshold_entropy:
-                    print(
-                        f"[!!!] ALERT: Ransomware-like file diversity from "
-                        f"{comm} (PID {pid})"
-                    )
-                    print(
-                        f"      {unique_files} unique files across "
-                        f"{unique_dirs} directories in {self.time_window}s "
-                        f"(avg entropy {avg_entropy:.2f})"
-                    )
-                    self._record_alert(
-                        pid, comm, "High file diversity + Entropy",
-                        severity="critical",
-                        unique_files=unique_files,
-                        unique_dirs=unique_dirs,
-                        avg_entropy=avg_entropy,
-                    )
-                    self.take_action(pid, comm, "High file diversity + Entropy")
-                    return
-
-            # Check frequency and entropy (original heuristic).
-            # Require at least 2 unique files to avoid false positives
-            # from single-file operations (e.g. gpg encrypting one file
-            # produces many write syscalls to the same output).
-            if len(self.process_stats[pid]) >= self.threshold_writes:
-                recent_files = {e[2] for e in self.process_stats[pid]}
-                if len(recent_files) < 2:
-                    return  # Single-file write burst — not ransomware
-                avg_entropy = sum(e[1] for e in self.process_stats[pid]) / len(
-                    self.process_stats[pid]
-                )
-                if avg_entropy >= self.threshold_entropy:
-                    print(
-                        f"[!!!] ALERT: Potential ransomware behavior "
-                        f"from {comm} (PID {pid})"
-                    )
-                    print(
-                        f"      High write frequency "
-                        f"({len(self.process_stats[pid])} in "
-                        f"{self.time_window}s) and high entropy "
-                        f"({avg_entropy:.2f})"
-                    )
-                    self._record_alert(
-                        pid, comm, "High entropy + Frequency",
-                        severity="high", avg_entropy=avg_entropy,
-                    )
-                    self.take_action(pid, comm, "High entropy + Frequency")
+            if self._check_behavioral_heuristics(pid, comm=comm, now=now) == "diversity":
+                return
 
         elif event.type == 3:  # UNLINK
             self.unlink_stats[pid].append(now)

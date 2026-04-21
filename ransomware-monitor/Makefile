@@ -2,7 +2,7 @@
        exp-run exp-metrics exp-metrics-json exp-atomic-deps exp-benign-deps \
        exp-run-atomic exp-metrics-atomic exp-run-benign exp-metrics-benign \
        exp-run-behavioral exp-metrics-behavioral exp-run-tuned-behavioral \
-       exp-metrics-tuned-behavioral exp-run-tuned-all unit-test
+       exp-metrics-tuned-behavioral exp-run-tuned-all exp-clean-tuned unit-test
 
 # --- Tuned threshold overrides (used by exp-run-tuned-*) ---
 TUNED_ENV = THRESHOLD_ENTROPY=5.8 THRESHOLD_WRITES=1 TIME_WINDOW_SEC=3.0
@@ -122,6 +122,13 @@ exp-run-tuned-all:
 	@echo "\n=== Benign ===" && python3 experiments/metrics.py --results experiments/out/benign_tuned/results.csv
 	@echo "\n=== Behavioral ===" && python3 experiments/metrics.py --results experiments/out/behavioral_tuned/results.csv
 	@echo "\n=== Combined ===" && python3 experiments/metrics.py --results experiments/out/tuned_all/results.csv
+
+exp-clean-tuned:
+	rm -rf experiments/out/legacy_tuned \
+	      experiments/out/atomic_tuned \
+	      experiments/out/benign_tuned \
+	      experiments/out/behavioral_tuned \
+	      experiments/out/tuned_all
 
 # --- Cleanup ---
 
