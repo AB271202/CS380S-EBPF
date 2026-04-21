@@ -8,8 +8,8 @@ out.txt
 *.log
 *.out
 *.synctex.gz
-./WSL2-Linux-Kernel
-
+WSL2-Linux-Kernel/
+HelloWorldprogs/
 # Generated experiment outputs from local reruns
 ransomware-monitor/experiments/out/legacy_tuned/
 ransomware-monitor/experiments/out/atomic_tuned/
