@@ -1,13 +1,13 @@
 """Unit tests for the RansomwareDetector false-positive reduction features.
 
 Covers:
-  1. Process whitelist – trusted processes are silently skipped.
-  2. Canary (honeypot) files – non-whitelisted access triggers critical alerts.
-  3. Magic-byte analysis – overwriting known file headers with encrypted data
+  1. Process whitelist d - trusted processes are silently skipped.
+  2. Canary (honeypot) files d - non-whitelisted access triggers critical alerts.
+  3. Magic-byte analysis d - overwriting known file headers with encrypted data
      is flagged at critical severity.
-  4. Binary hash verification – tampered binaries revoke the whitelist.
-  5. Process lineage validation – untrusted parent chains revoke the whitelist.
-  6. Regression – existing entropy / frequency / extension / unlink detection
+  4. Binary hash verification d - tampered binaries revoke the whitelist.
+  5. Process lineage validation d - untrusted parent chains revoke the whitelist.
+  6. Regression d - existing entropy / frequency / extension / unlink detection
      still works correctly after the refactor.
 """
 
@@ -878,7 +878,7 @@ class TestMagicByteAnalysis(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 4. Regression Tests – Original Detection Still Works
+# 4. Regression Tests d - Original Detection Still Works
 # ---------------------------------------------------------------------------
 
 class TestEntropyCalculation(unittest.TestCase):

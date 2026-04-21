@@ -239,7 +239,7 @@ class RansomwareDetector:
         if whitelist_config:
             self._load_config(whitelist_config)
 
-        # Alerts list – useful for programmatic inspection in tests.
+        # Alerts list - useful for programmatic inspection in tests.
         self.alerts: List[dict] = []
 
         # --- Response configuration ---
@@ -288,11 +288,11 @@ class RansomwareDetector:
         When *pid* is provided **and** binary-hash or lineage verification
         is enabled, the name-based match is hardened:
 
-        * **Binary hash** – the SHA-256 of ``/proc/<pid>/exe`` must appear
+        * **Binary hash** - the SHA-256 of ``/proc/<pid>/exe`` must appear
           in ``self.trusted_hashes`` for that executable path.  If no
           hashes are registered for the path the check is skipped (open
           trust).  A mismatch revokes the whitelist.
-        * **Lineage** – at least one ancestor in the process tree must
+        * **Lineage** - at least one ancestor in the process tree must
           have a comm name in ``self.trusted_parents``.  If none do, the
           whitelist is revoked.
 
