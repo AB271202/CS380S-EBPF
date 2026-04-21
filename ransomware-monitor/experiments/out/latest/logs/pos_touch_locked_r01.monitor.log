@@ -1,13 +1,13 @@
 Loading BPF program from agent/../bpf/monitor.bpf.c...
 In file included from <built-in>:2:
 In file included from /virtual/include/bcc/bpf.h:12:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
-/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:41:9: warning: '__HAVE_BUILTIN_BSWAP32__' macro redefined [-Wmacro-redefined]
+In file included from include/linux/types.h:6:
+In file included from include/uapi/linux/types.h:14:
+In file included from ./include/uapi/linux/posix_types.h:5:
+In file included from include/linux/stddef.h:5:
+In file included from include/uapi/linux/stddef.h:5:
+In file included from include/linux/compiler_types.h:80:
+include/linux/compiler-clang.h:41:9: warning: '__HAVE_BUILTIN_BSWAP32__' macro redefined [-Wmacro-redefined]
 #define __HAVE_BUILTIN_BSWAP32__
         ^
 <command line>:4:9: note: previous definition is here
@@ -15,13 +15,13 @@ In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/inclu
         ^
 In file included from <built-in>:2:
 In file included from /virtual/include/bcc/bpf.h:12:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
-/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:42:9: warning: '__HAVE_BUILTIN_BSWAP64__' macro redefined [-Wmacro-redefined]
+In file included from include/linux/types.h:6:
+In file included from include/uapi/linux/types.h:14:
+In file included from ./include/uapi/linux/posix_types.h:5:
+In file included from include/linux/stddef.h:5:
+In file included from include/uapi/linux/stddef.h:5:
+In file included from include/linux/compiler_types.h:80:
+include/linux/compiler-clang.h:42:9: warning: '__HAVE_BUILTIN_BSWAP64__' macro redefined [-Wmacro-redefined]
 #define __HAVE_BUILTIN_BSWAP64__
         ^
 <command line>:5:9: note: previous definition is here
@@ -29,24 +29,23 @@ In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/inclu
         ^
 In file included from <built-in>:2:
 In file included from /virtual/include/bcc/bpf.h:12:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
-/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:43:9: warning: '__HAVE_BUILTIN_BSWAP16__' macro redefined [-Wmacro-redefined]
+In file included from include/linux/types.h:6:
+In file included from include/uapi/linux/types.h:14:
+In file included from ./include/uapi/linux/posix_types.h:5:
+In file included from include/linux/stddef.h:5:
+In file included from include/uapi/linux/stddef.h:5:
+In file included from include/linux/compiler_types.h:80:
+include/linux/compiler-clang.h:43:9: warning: '__HAVE_BUILTIN_BSWAP16__' macro redefined [-Wmacro-redefined]
 #define __HAVE_BUILTIN_BSWAP16__
         ^
 <command line>:3:9: note: previous definition is here
 #define __HAVE_BUILTIN_BSWAP16__ 1
         ^
 3 warnings generated.
-Traceback (most recent call last):
-  File "agent/main.py", line 90, in <module>
-    main()
-  File "agent/main.py", line 40, in main
-    b = BPF(src_file=BPF_SOURCE_FILE)
-  File "/usr/lib/python3/dist-packages/bcc/__init__.py", line 342, in __init__
-    self.module = lib.bpf_module_create_c_from_string(text,
-KeyboardInterrupt
+Ransomware monitor started (alert-only mode, action=simulate, perf pages=4096). Press Ctrl+C to stop.
+[!] ALERT: Suspicious file open '.locked' detected from touch (PID 15674)
+ALERT_JSON:{"alert_type": "suspicious_extension", "comm": "touch", "pid": 15674, "reason": "Suspicious extension", "run_id": "pos_touch_locked_r01", "severity": "medium", "ts": 1776810117.0830526}
+[X] ACTION (simulate): touch (PID 15674) — Suspicious extension [severity=medium]
+      [simulate] Would execute full EDR chain for PID 15674
+
+Stopping monitor...

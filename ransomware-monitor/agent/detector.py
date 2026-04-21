@@ -174,6 +174,10 @@ class RansomwareDetector:
         self.unlink_stats = collections.defaultdict(list)
         # dir_scan_stats: { pid: [(timestamp, directory), ...] }
         self.dir_scan_stats = collections.defaultdict(list)
+        # urandom_access: { pid: [timestamp, ...] }
+        self.urandom_access: Dict[int, List[float]] = collections.defaultdict(list)
+        # kill_events: { pid: [(timestamp, target_comm, signal), ...] }
+        self.kill_events: Dict[int, List[Tuple[float, str, int]]] = collections.defaultdict(list)
         # open_tracker: { pid: {filename: timestamp, ...} }
         # Tracks files opened (not created) for in-place overwrite detection.
         self.open_tracker: Dict[int, Dict[str, float]] = collections.defaultdict(dict)
@@ -746,8 +750,10 @@ class RansomwareDetector:
             self._process_profiles[pid] = {
                 "high_entropy_files": set(),
                 "high_entropy_dirs": set(),
-                "unlinked_sources": 0,   # Unlinks of files NOT written by this PID
+                "unlinked_sources": 0,
                 "in_place_overwrites": set(),
+                "urandom_reads": 0,
+                "kill_signals": 0,
                 "score": 0.0,
             }
         return self._process_profiles[pid]
@@ -784,7 +790,30 @@ class RansomwareDetector:
         recent_writes = profile["high_entropy_files"]
         if filename not in recent_writes:
             profile["unlinked_sources"] += 1
-            profile["score"] += 3.0  # Deleting a file you didn't write = suspicious
+            profile["score"] += 3.0
+
+    def _update_profile_urandom(self, pid):
+        """Update the cumulative profile after a /dev/urandom read.
+
+        A single urandom read is normal (many programs seed RNGs).
+        Repeated reads combined with high-entropy writes are suspicious.
+        Only the first read adds to the score — subsequent reads don't
+        pile up, but the flag amplifies other signals.
+        """
+        profile = self._get_profile(pid)
+        profile["urandom_reads"] += 1
+        if profile["urandom_reads"] == 1:
+            profile["score"] += 3.0  # First urandom access
+
+    def _update_profile_kill(self, pid, target_comm, sig):
+        """Update the cumulative profile after a kill signal.
+
+        Ransomware kills AV, backup, and database processes to prevent
+        interference.  Each distinct target adds to the score.
+        """
+        profile = self._get_profile(pid)
+        profile["kill_signals"] += 1
+        profile["score"] += 4.0  # Each kill signal is highly suspicious
 
     def _check_cumulative_alert(self, pid, comm):
         """Fire an alert if the cumulative score exceeds the threshold."""
@@ -797,6 +826,8 @@ class RansomwareDetector:
             n_dirs = len(profile["high_entropy_dirs"])
             n_overwrites = len(profile["in_place_overwrites"])
             n_unlinks = profile["unlinked_sources"]
+            n_urandom = profile["urandom_reads"]
+            n_kills = profile["kill_signals"]
             print(
                 f"[!!!] ALERT: Slow-burn ransomware behavior from "
                 f"{comm} (PID {pid})"
@@ -806,7 +837,9 @@ class RansomwareDetector:
                 f"(threshold {self.cumulative_score_threshold}): "
                 f"{n_files} encrypted files across {n_dirs} dirs, "
                 f"{n_overwrites} in-place overwrites, "
-                f"{n_unlinks} source deletions"
+                f"{n_unlinks} source deletions, "
+                f"{n_urandom} urandom reads, "
+                f"{n_kills} kill signals"
             )
             self._record_alert(
                 pid, comm, "Slow-burn ransomware",
@@ -816,6 +849,8 @@ class RansomwareDetector:
                 encrypted_dirs=n_dirs,
                 in_place_overwrites=n_overwrites,
                 source_deletions=n_unlinks,
+                urandom_reads=n_urandom,
+                kill_signals=n_kills,
             )
             self.take_action(pid, comm, "Slow-burn ransomware")
 
@@ -1310,6 +1345,57 @@ class RansomwareDetector:
                     scanned_dirs=len(unique_scanned),
                 )
                 self.take_action(pid, comm, "Directory traversal + Writes")
+
+        elif event.type == 5:  # URANDOM_READ
+            self.urandom_access[pid].append(now)
+            # Feed into cumulative profile
+            self._update_profile_urandom(pid)
+            self._check_cumulative_alert(pid, comm)
+
+            # Immediate alert if a process reads urandom AND has recent
+            # high-entropy writes — strong encryption signal.
+            recent_he_writes = [
+                e for e in self.process_stats.get(pid, [])
+                if e[1] > self.threshold_entropy and now - e[0] <= self.time_window
+            ]
+            if len(recent_he_writes) >= 2:
+                unique_files = {e[2] for e in recent_he_writes}
+                if len(unique_files) >= 2:
+                    print(
+                        f"[!!!] ALERT: /dev/urandom read + high-entropy writes "
+                        f"from {comm} (PID {pid}): "
+                        f"{len(unique_files)} files in {self.time_window}s"
+                    )
+                    self._record_alert(
+                        pid, comm, "Urandom + high-entropy writes",
+                        severity="high",
+                        urandom_reads=len(self.urandom_access[pid]),
+                        recent_he_files=len(unique_files),
+                    )
+                    self.take_action(pid, comm, "Urandom + high-entropy writes")
+
+        elif event.type == 6:  # KILL
+            target_comm = filename  # BPF stores target comm in filename field
+            sig = int(event.size)   # BPF stores signal number in size field
+            self.kill_events[pid].append((now, target_comm, sig))
+
+            # Feed into cumulative profile
+            self._update_profile_kill(pid, target_comm, sig)
+            self._check_cumulative_alert(pid, comm)
+
+            # Immediate alert on kill signals — ransomware killing
+            # security/backup processes is a critical indicator.
+            print(
+                f"[!!!] ALERT: Process {comm} (PID {pid}) sent "
+                f"signal {sig} to '{target_comm}'"
+            )
+            self._record_alert(
+                pid, comm, "Kill signal sent",
+                severity="high",
+                target_comm=target_comm,
+                signal=sig,
+            )
+            self.take_action(pid, comm, "Kill signal sent")
 
     # ------------------------------------------------------------------
     # Mitigation (delegates to Mitigator)

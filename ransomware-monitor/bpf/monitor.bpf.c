@@ -16,7 +16,9 @@ enum event_type {
     EVENT_WRITE,
     EVENT_RENAME,
     EVENT_UNLINK,
-    EVENT_GETDENTS
+    EVENT_GETDENTS,
+    EVENT_URANDOM_READ,
+    EVENT_KILL
 };
 
 struct event_t {
@@ -80,6 +82,24 @@ static __always_inline int trace_open(struct pt_regs *ctx, const char *filename,
     struct filename_t fname = {};
     bpf_probe_read_kernel(&fname.s, sizeof(fname.s), event->filename);
     fd_to_filename.update(&pid_tgid, &fname);
+
+    // Detect /dev/urandom or /dev/random access — emit as EVENT_URANDOM_READ.
+    // Compare the first 13 bytes: "/dev/urandom\0" or "/dev/random\0".
+    if (event->filename[0] == '/' && event->filename[1] == 'd' &&
+        event->filename[2] == 'e' && event->filename[3] == 'v' &&
+        event->filename[4] == '/') {
+        if ((event->filename[5] == 'u' && event->filename[6] == 'r' &&
+             event->filename[7] == 'a' && event->filename[8] == 'n' &&
+             event->filename[9] == 'd' && event->filename[10] == 'o' &&
+             event->filename[11] == 'm') ||
+            (event->filename[5] == 'r' && event->filename[6] == 'a' &&
+             event->filename[7] == 'n' && event->filename[8] == 'd' &&
+             event->filename[9] == 'o' && event->filename[10] == 'm')) {
+            event->type = EVENT_URANDOM_READ;
+            events.perf_submit(ctx, event, sizeof(*event));
+            return 0;
+        }
+    }
 
     events.perf_submit(ctx, event, sizeof(*event));
     return 0;
@@ -200,4 +220,36 @@ int kprobe__do_unlinkat(struct pt_regs *ctx) {
 
 int kprobe__iterate_dir(struct pt_regs *ctx) {
     return trace_getdents(ctx);
+}
+
+// Hook kill/signal delivery to detect ransomware killing security processes.
+// do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p, ...)
+int kprobe__do_send_sig_info(struct pt_regs *ctx) {
+    struct event_t *event = get_event();
+    if (!event) return 0;
+
+    int sig = (int)PT_REGS_PARM1(ctx);
+    struct task_struct *target = (struct task_struct *)PT_REGS_PARM3(ctx);
+
+    // Only track SIGKILL (9) and SIGTERM (15) — the signals ransomware
+    // uses to kill AV, backup, and database processes.
+    if (sig != 9 && sig != 15) {
+        return 0;
+    }
+
+    __builtin_memset(event, 0, sizeof(*event));
+
+    populate_process_info(event);
+    event->type = EVENT_KILL;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    event->size = sig;  // Reuse size field for signal number
+
+    // Read the target process's comm into filename field.
+    if (target) {
+        bpf_probe_read_kernel_str(&event->filename, sizeof(event->filename),
+                                  &target->comm);
+    }
+
+    events.perf_submit(ctx, event, sizeof(*event));
+    return 0;
 }

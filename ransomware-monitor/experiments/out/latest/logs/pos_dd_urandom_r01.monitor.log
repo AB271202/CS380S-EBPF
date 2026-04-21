@@ -1,13 +1,13 @@
 Loading BPF program from agent/../bpf/monitor.bpf.c...
 In file included from <built-in>:2:
 In file included from /virtual/include/bcc/bpf.h:12:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
-/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:41:9: warning: '__HAVE_BUILTIN_BSWAP32__' macro redefined [-Wmacro-redefined]
+In file included from include/linux/types.h:6:
+In file included from include/uapi/linux/types.h:14:
+In file included from ./include/uapi/linux/posix_types.h:5:
+In file included from include/linux/stddef.h:5:
+In file included from include/uapi/linux/stddef.h:5:
+In file included from include/linux/compiler_types.h:80:
+include/linux/compiler-clang.h:41:9: warning: '__HAVE_BUILTIN_BSWAP32__' macro redefined [-Wmacro-redefined]
 #define __HAVE_BUILTIN_BSWAP32__
         ^
 <command line>:4:9: note: previous definition is here
@@ -15,13 +15,13 @@ In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/inclu
         ^
 In file included from <built-in>:2:
 In file included from /virtual/include/bcc/bpf.h:12:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
-/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:42:9: warning: '__HAVE_BUILTIN_BSWAP64__' macro redefined [-Wmacro-redefined]
+In file included from include/linux/types.h:6:
+In file included from include/uapi/linux/types.h:14:
+In file included from ./include/uapi/linux/posix_types.h:5:
+In file included from include/linux/stddef.h:5:
+In file included from include/uapi/linux/stddef.h:5:
+In file included from include/linux/compiler_types.h:80:
+include/linux/compiler-clang.h:42:9: warning: '__HAVE_BUILTIN_BSWAP64__' macro redefined [-Wmacro-redefined]
 #define __HAVE_BUILTIN_BSWAP64__
         ^
 <command line>:5:9: note: previous definition is here
@@ -29,74 +29,24 @@ In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/inclu
         ^
 In file included from <built-in>:2:
 In file included from /virtual/include/bcc/bpf.h:12:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/types.h:6:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/types.h:14:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/posix_types.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/uapi/linux/stddef.h:5:
-In file included from /lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler_types.h:80:
-/lib/modules/5.15.90.1-microsoft-standard-WSL2/build/include/linux/compiler-clang.h:43:9: warning: '__HAVE_BUILTIN_BSWAP16__' macro redefined [-Wmacro-redefined]
+In file included from include/linux/types.h:6:
+In file included from include/uapi/linux/types.h:14:
+In file included from ./include/uapi/linux/posix_types.h:5:
+In file included from include/linux/stddef.h:5:
+In file included from include/uapi/linux/stddef.h:5:
+In file included from include/linux/compiler_types.h:80:
+include/linux/compiler-clang.h:43:9: warning: '__HAVE_BUILTIN_BSWAP16__' macro redefined [-Wmacro-redefined]
 #define __HAVE_BUILTIN_BSWAP16__
         ^
 <command line>:3:9: note: previous definition is here
 #define __HAVE_BUILTIN_BSWAP16__ 1
         ^
 3 warnings generated.
-Ransomware monitor started (alert-only mode, perf pages=4096). Press Ctrl+C to stop.
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (10 in 1.0s) and high entropy (6.57)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.5710544897978025, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.2292252, "write_count": 10}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (11 in 1.0s) and high entropy (6.57)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.572045434614247, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.2295423, "write_count": 11}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (12 in 1.0s) and high entropy (6.58)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.58036456506306, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.229763, "write_count": 12}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (13 in 1.0s) and high entropy (6.58)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.582437084994212, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.2299154, "write_count": 13}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (14 in 1.0s) and high entropy (6.58)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.579475681879579, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.2300887, "write_count": 14}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (15 in 1.0s) and high entropy (6.58)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.57533645021739, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.230242, "write_count": 15}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (16 in 1.0s) and high entropy (6.57)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.57305978242614, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.2303827, "write_count": 16}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (17 in 1.0s) and high entropy (6.57)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.570825670682173, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.230567, "write_count": 17}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (18 in 1.0s) and high entropy (6.57)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.566448398175241, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.2307212, "write_count": 18}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (19 in 1.0s) and high entropy (6.56)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.564176628037459, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.2308667, "write_count": 19}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
-[!!!] ALERT: Potential ransomware behavior from dd (PID 15008)
-      High write frequency (20 in 1.0s) and high entropy (6.56)
-ALERT_JSON:{"alert_type": "write_entropy_frequency", "avg_entropy": 6.564475784913455, "comm": "dd", "filename": "random.bin", "pid": 15008, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "ts": 1772980982.231015, "write_count": 20}
-[X] ACTION: Terminating process dd (PID 15008) due to High entropy + Frequency...
-      (Simulation) Sent SIGKILL to PID 15008
+Ransomware monitor started (alert-only mode, action=simulate, perf pages=4096). Press Ctrl+C to stop.
+[!!!] ALERT: Potential ransomware behavior from python3 (PID 15672)
+      High write frequency (21 in 1.0s) and high entropy (6.42)
+ALERT_JSON:{"alert_type": "high_entropy_+_frequency", "avg_entropy": 6.418619416534058, "comm": "python3", "pid": 15672, "reason": "High entropy + Frequency", "run_id": "pos_dd_urandom_r01", "severity": "high", "ts": 1776810128.2094586}
+[X] ACTION (simulate): python3 (PID 15672) — High entropy + Frequency [severity=high]
+      [simulate] Would execute full EDR chain for PID 15672
 
 Stopping monitor...

@@ -13,7 +13,9 @@ EVENT_TYPES = {
     1: "WRITE",
     2: "RENAME",
     3: "UNLINK",
-    4: "GETDENTS"
+    4: "GETDENTS",
+    5: "URANDOM_READ",
+    6: "KILL",
 }
 
 DEFAULT_PERF_PAGE_CNT = 4096

@@ -1948,6 +1948,137 @@ class TestSlowBurnDetection(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Urandom Access and Kill Signal Detection Tests
+# ---------------------------------------------------------------------------
+
+class TestUrandomDetection(unittest.TestCase):
+    """Verify /dev/urandom access tracking and alerting."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=10.0, threshold_writes=100,
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_urandom_read_tracked(self):
+        det = self._det()
+        evt = _make_event(5, 30000, "evil", "/dev/urandom", 0, b"")
+        det.analyze_event(evt)
+        self.assertEqual(len(det.urandom_access[30000]), 1)
+
+    def test_urandom_feeds_cumulative_profile(self):
+        det = self._det(cumulative_score_threshold=100)
+        evt = _make_event(5, 30001, "evil", "/dev/urandom", 0, b"")
+        det.analyze_event(evt)
+        profile = det._get_profile(30001)
+        self.assertEqual(profile["urandom_reads"], 1)
+        self.assertGreater(profile["score"], 0)
+
+    def test_urandom_plus_writes_triggers_alert(self):
+        """Urandom read + 2+ high-entropy writes to distinct files → alert."""
+        det = self._det()
+        buf = os.urandom(128)
+        # Two high-entropy writes to distinct files
+        for f in ["/home/user/a.doc", "/home/user/b.doc"]:
+            evt = _make_event(1, 30002, "evil", f, 128, buf)
+            det.analyze_event(evt)
+        # Then urandom read
+        evt = _make_event(5, 30002, "evil", "/dev/urandom", 0, b"")
+        det.analyze_event(evt)
+        urandom_alerts = [
+            a for a in det.alerts if a["reason"] == "Urandom + high-entropy writes"
+        ]
+        self.assertGreater(len(urandom_alerts), 0)
+
+    def test_urandom_without_writes_no_immediate_alert(self):
+        """Urandom read alone should not trigger the immediate alert."""
+        det = self._det()
+        evt = _make_event(5, 30003, "normal", "/dev/urandom", 0, b"")
+        det.analyze_event(evt)
+        urandom_alerts = [
+            a for a in det.alerts if a["reason"] == "Urandom + high-entropy writes"
+        ]
+        self.assertEqual(len(urandom_alerts), 0)
+
+    def test_whitelisted_process_urandom_no_alert(self):
+        """Whitelisted processes reading urandom should not alert."""
+        det = self._det()
+        evt = _make_event(5, 30004, "gcc", "/dev/urandom", 0, b"")
+        det.analyze_event(evt)
+        self.assertEqual(len(det.alerts), 0)
+
+
+class TestKillSignalDetection(unittest.TestCase):
+    """Verify kill signal tracking and alerting."""
+
+    def _det(self, **kw):
+        defaults = dict(
+            verify_binary_hash=False, verify_lineage=False,
+            time_window=10.0,
+        )
+        defaults.update(kw)
+        return RansomwareDetector(**defaults)
+
+    def test_kill_signal_tracked(self):
+        det = self._det()
+        # event type 6, size=9 (SIGKILL), filename=target comm
+        evt = _make_event(6, 31000, "evil", "clamd", 9, b"")
+        det.analyze_event(evt)
+        self.assertEqual(len(det.kill_events[31000]), 1)
+
+    def test_kill_signal_triggers_alert(self):
+        det = self._det()
+        evt = _make_event(6, 31001, "evil", "backup-agent", 15, b"")
+        det.analyze_event(evt)
+        kill_alerts = [a for a in det.alerts if a["reason"] == "Kill signal sent"]
+        self.assertGreater(len(kill_alerts), 0)
+        self.assertEqual(kill_alerts[0]["target_comm"], "backup-agent")
+        self.assertEqual(kill_alerts[0]["signal"], 15)
+
+    def test_kill_feeds_cumulative_profile(self):
+        det = self._det(cumulative_score_threshold=100)
+        evt = _make_event(6, 31002, "evil", "mysqld", 9, b"")
+        det.analyze_event(evt)
+        profile = det._get_profile(31002)
+        self.assertEqual(profile["kill_signals"], 1)
+        self.assertGreater(profile["score"], 0)
+
+    def test_multiple_kills_accumulate_score(self):
+        det = self._det(cumulative_score_threshold=12)
+        # 3 kills × 4 points = 12 → should trigger cumulative alert
+        for target in ["clamd", "backup-agent", "mysqld"]:
+            evt = _make_event(6, 31003, "evil", target, 9, b"")
+            det.analyze_event(evt)
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertGreater(len(slow_alerts), 0)
+
+    def test_whitelisted_process_kill_no_alert(self):
+        """Whitelisted processes sending signals should not alert."""
+        det = self._det()
+        evt = _make_event(6, 31004, "systemd", "old-service", 15, b"")
+        det.analyze_event(evt)
+        kill_alerts = [a for a in det.alerts if a["reason"] == "Kill signal sent"]
+        self.assertEqual(len(kill_alerts), 0)
+
+    def test_kill_plus_encryption_triggers_faster(self):
+        """Kill signals + high-entropy writes should cross the threshold faster."""
+        det = self._det(cumulative_score_threshold=10)
+        buf = os.urandom(128)
+        # 1 kill = 4 points
+        evt = _make_event(6, 31005, "evil", "clamd", 9, b"")
+        det.analyze_event(evt)
+        # 2 files in 2 dirs = 2×1 + 2×2 = 6 points → total 10
+        for f in ["/home/user/a/f1.doc", "/home/user/b/f2.doc"]:
+            time.sleep(0.02)
+            evt = _make_event(1, 31005, "evil", f, 128, buf)
+            det.analyze_event(evt)
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertGreater(len(slow_alerts), 0)
+
+
+# ---------------------------------------------------------------------------
 # EDR Response Chain Tests
 # ---------------------------------------------------------------------------
 
