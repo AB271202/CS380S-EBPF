@@ -1,14 +1,11 @@
 import math
 import collections
 import hashlib
-import logging
 import os
-import shutil
-import signal as signal_mod
-import stat
-import subprocess
 import time
 import json
+
+from mitigator import Mitigator
 from typing import Dict, List, Optional, Set, Tuple
 
 
@@ -93,41 +90,7 @@ USER_FILE_EXTENSIONS = {
 
 
 class RansomwareDetector:
-    """Heuristic ransomware detector with false-positive reduction.
-
-    False-positive reduction features
-    ----------------------------------
-    1. **Process whitelist** – trusted process names are skipped entirely,
-       preventing alerts from compilers, package managers, editors, etc.
-       The whitelist can be extended at runtime via a JSON config file.
-    2. **Canary (honeypot) files** – hidden sentinel files placed in
-       sensitive directories.  Any *non-whitelisted* process that touches
-       a canary triggers an immediate high-priority alert.
-    3. **Magic-byte analysis** – on WRITE events the first bytes of the
-       buffer are compared against known file-type signatures.  If a
-       recognised header is being overwritten with high-entropy data the
-       alert confidence is elevated.
-    4. **Binary hash verification** – for whitelisted process names the
-       SHA-256 of the on-disk executable is compared against a set of
-       known-good digests.  A mismatch means the binary was replaced or
-       tampered with and the process is treated as untrusted.
-    5. **Process lineage validation** – the parent-process chain is walked
-       via ``/proc/<pid>/status``.  If none of the ancestors are in the
-       set of trusted parent names the process is treated as untrusted,
-       catching scenarios where a dropper spawns a process that happens
-       to share a whitelisted name.
-    6. **File diversity scoring** – tracks how many unique file paths and
-       unique parent directories a PID writes to within the time window.
-       A high count across many directories is a strong ransomware signal
-       that separates it from defragmenters or databases.
-    7. **Directory traversal detection** – monitors ``getdents64`` calls.
-       Rapid directory listing combined with subsequent writes is a
-       signature of ransomware scanning for targets.
-    8. **Write target classification** – writes to block devices, procfs,
-       sysfs, and other system paths are excluded from the entropy and
-       frequency heuristics, preventing false positives from
-       defragmenters and system services.
-    """
+    """Heuristic ransomware detector with false-positive reduction."""
 
     def __init__(
         self,
@@ -280,15 +243,13 @@ class RansomwareDetector:
         self.alerts: List[dict] = []
 
         # --- Response configuration ---
-        # "simulate" = log only, "suspend" = SIGSTOP, "kill" = full EDR chain
-        self.action_mode = action_mode
-        self.snapshot_cmd = snapshot_cmd
-        self._snapshot_triggered = False
-        self.quarantine_dir = quarantine_dir or "/var/lib/ransomware-monitor/quarantine"
-        self.enable_network_isolation = enable_network_isolation
-        # Track quarantined binaries for the blocklist
-        self.blocklist: Set[str] = set()
-        # Track files modified by flagged PIDs for remediation
+        self.mitigator = Mitigator(
+            action_mode=action_mode,
+            snapshot_cmd=snapshot_cmd,
+            quarantine_dir=quarantine_dir,
+            enable_network_isolation=enable_network_isolation,
+        )
+        self.action_mode = self.mitigator.action_mode
         self._pid_modified_files: Dict[int, List[str]] = collections.defaultdict(list)
 
     # ------------------------------------------------------------------
@@ -1351,220 +1312,20 @@ class RansomwareDetector:
                 self.take_action(pid, comm, "Directory traversal + Writes")
 
     # ------------------------------------------------------------------
-    # EDR Response Chain
+    # Mitigation (delegates to Mitigator)
     # ------------------------------------------------------------------
 
     def take_action(self, pid, comm, reason):
-        """Execute the graduated EDR response chain.
-
-        The six steps mirror production AV/EDR tools:
-        1. Process Kill — terminate the process tree
-        2. Quarantine — move the binary to a secure location
-        3. Network Isolation — block the PID's network access
-        4. Remediation — log modified files for recovery
-        5. Rollback — trigger a filesystem snapshot
-        6. Binary Hardening — strip exec bit, add to blocklist
-
-        In ``simulate`` mode, all steps are logged but not executed.
-        In ``suspend`` mode, only step 1 uses SIGSTOP instead of SIGKILL.
-        In ``kill`` mode, the full chain executes.
-        """
+        """Delegate to the Mitigator for the 6-step EDR response chain."""
         severity = "unknown"
         for a in reversed(self.alerts):
             if a.get("pid") == pid:
                 severity = a.get("severity", "unknown")
                 break
 
-        print(
-            f"[X] ACTION ({self.action_mode}): {comm} (PID {pid}) — "
-            f"{reason} [severity={severity}]"
+        self.mitigator.take_action(
+            pid, comm, reason,
+            severity=severity,
+            resolve_exe_fn=self._resolve_exe,
+            modified_files=self._pid_modified_files.get(pid),
         )
-
-        if self.action_mode == "simulate":
-            print(f"      [simulate] Would execute full EDR chain for PID {pid}")
-            return
-
-        # --- Step 1: Process Kill / Suspend ---
-        self._step_kill_process(pid, comm)
-
-        # --- Step 2: Quarantine the binary ---
-        exe_path = self._resolve_exe(pid)
-        quarantined_path = self._step_quarantine(pid, comm, exe_path)
-
-        # --- Step 3: Network Isolation ---
-        self._step_network_isolate(pid, comm)
-
-        # --- Step 4: Remediation (log modified files) ---
-        self._step_remediate(pid, comm)
-
-        # --- Step 5: Rollback (filesystem snapshot) ---
-        if severity == "critical":
-            self._step_rollback(pid, comm)
-
-        # --- Step 6: Binary Hardening ---
-        self._step_harden_binary(pid, comm, exe_path, quarantined_path)
-
-    def _step_kill_process(self, pid, comm):
-        """Step 1: Kill or suspend the process and its children."""
-        sig = signal_mod.SIGSTOP if self.action_mode == "suspend" else signal_mod.SIGKILL
-        sig_name = "SIGSTOP" if self.action_mode == "suspend" else "SIGKILL"
-
-        # Kill children first (best-effort via /proc/<pid>/task/*/children)
-        children = self._get_child_pids(pid)
-        for cpid in children:
-            try:
-                os.kill(cpid, sig)
-                print(f"      [step1] Sent {sig_name} to child PID {cpid}")
-            except (ProcessLookupError, PermissionError):
-                pass
-
-        # Kill the main process
-        try:
-            os.kill(pid, sig)
-            print(f"      [step1] Sent {sig_name} to PID {pid} ({comm})")
-        except ProcessLookupError:
-            print(f"      [step1] PID {pid} already exited")
-        except PermissionError:
-            print(f"      [step1] Permission denied for PID {pid}")
-        except Exception as exc:
-            print(f"      [step1] Error signaling PID {pid}: {exc}")
-
-    @staticmethod
-    def _get_child_pids(pid):
-        """Return a list of child PIDs for *pid* via /proc."""
-        children = []
-        try:
-            children_path = f"/proc/{pid}/task/{pid}/children"
-            with open(children_path, "r") as fh:
-                children = [int(p) for p in fh.read().split() if p.strip()]
-        except (OSError, ValueError):
-            pass
-        return children
-
-    def _step_quarantine(self, pid, comm, exe_path):
-        """Step 2: Move the offending binary to the quarantine directory.
-
-        Returns the quarantined path, or None if quarantine failed.
-        """
-        if not exe_path or not os.path.isfile(exe_path):
-            print(f"      [step2] Cannot quarantine: binary not found for PID {pid}")
-            return None
-
-        try:
-            os.makedirs(self.quarantine_dir, exist_ok=True)
-            quarantined = os.path.join(
-                self.quarantine_dir,
-                f"{comm}_{pid}_{int(time.time())}_{os.path.basename(exe_path)}",
-            )
-            shutil.copy2(exe_path, quarantined)
-            # Strip all permission bits from the quarantined copy
-            os.chmod(quarantined, 0o000)
-            print(f"      [step2] Quarantined {exe_path} → {quarantined}")
-            return quarantined
-        except (OSError, shutil.Error) as exc:
-            print(f"      [step2] Quarantine failed for {exe_path}: {exc}")
-            return None
-
-    def _step_network_isolate(self, pid, comm):
-        """Step 3: Block network access for the offending process via iptables.
-
-        Uses the owner match module to drop all outbound packets from the
-        process's UID.  This prevents C2 communication and data exfiltration.
-        """
-        if not self.enable_network_isolation:
-            print(f"      [step3] Network isolation disabled (use --enable-network-isolation)")
-            return
-
-        # Get the UID of the process
-        uid = self._get_pid_uid(pid)
-        if uid is None:
-            print(f"      [step3] Cannot determine UID for PID {pid}")
-            return
-
-        try:
-            # Block outbound traffic from this UID
-            subprocess.run(
-                [
-                    "iptables", "-A", "OUTPUT",
-                    "-m", "owner", "--uid-owner", str(uid),
-                    "-j", "DROP",
-                ],
-                capture_output=True, text=True, timeout=5,
-            )
-            print(f"      [step3] Blocked outbound traffic for UID {uid} (PID {pid})")
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-            print(f"      [step3] Network isolation failed: {exc}")
-
-    @staticmethod
-    def _get_pid_uid(pid):
-        """Read the real UID of *pid* from /proc/<pid>/status."""
-        try:
-            with open(f"/proc/{pid}/status", "r") as fh:
-                for line in fh:
-                    if line.startswith("Uid:"):
-                        return int(line.split()[1])
-        except (OSError, ValueError, IndexError):
-            pass
-        return None
-
-    def _step_remediate(self, pid, comm):
-        """Step 4: Log all files modified by the flagged process.
-
-        In a full implementation this would revert changes (restore from
-        backup, undo renames).  Currently we log the list for manual or
-        automated recovery.
-        """
-        modified = self._pid_modified_files.get(pid, [])
-        if not modified:
-            print(f"      [step4] No tracked file modifications for PID {pid}")
-            return
-
-        unique_files = list(dict.fromkeys(modified))  # Deduplicate, preserve order
-        print(f"      [step4] {len(unique_files)} files modified by {comm} (PID {pid}):")
-        for f in unique_files[:20]:  # Print first 20
-            print(f"              - {f}")
-        if len(unique_files) > 20:
-            print(f"              ... and {len(unique_files) - 20} more")
-
-    def _step_rollback(self, pid, comm):
-        """Step 5: Trigger a filesystem snapshot for rollback."""
-        if not self.snapshot_cmd:
-            print(f"      [step5] No snapshot command configured (use --snapshot-cmd)")
-            return
-
-        if self._snapshot_triggered:
-            print(f"      [step5] Snapshot already triggered this session")
-            return
-
-        self._snapshot_triggered = True
-        print(f"      [step5] Running snapshot: {self.snapshot_cmd}")
-        try:
-            result = subprocess.run(
-                self.snapshot_cmd, shell=True, timeout=30,
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0:
-                print(f"      [step5] Snapshot created successfully")
-            else:
-                print(f"      [step5] Snapshot command exited with code {result.returncode}")
-                if result.stderr:
-                    print(f"              stderr: {result.stderr.strip()}")
-        except subprocess.TimeoutExpired:
-            print(f"      [step5] Snapshot command timed out")
-        except Exception as exc:
-            print(f"      [step5] Snapshot failed: {exc}")
-
-    def _step_harden_binary(self, pid, comm, exe_path, quarantined_path):
-        """Step 6: Strip execute permission and add to persistent blocklist."""
-        if exe_path and os.path.isfile(exe_path):
-            try:
-                current = os.stat(exe_path).st_mode
-                os.chmod(exe_path, current & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-                print(f"      [step6] Stripped exec bit from {exe_path}")
-            except OSError as exc:
-                print(f"      [step6] Cannot strip exec bit from {exe_path}: {exc}")
-
-        # Add to persistent blocklist
-        if exe_path:
-            self.blocklist.add(exe_path)
-            print(f"      [step6] Added {exe_path} to blocklist ({len(self.blocklist)} entries)")

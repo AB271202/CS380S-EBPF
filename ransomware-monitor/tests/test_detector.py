@@ -33,6 +33,7 @@ from detector import (
     MAGIC_BYTES,
     RansomwareDetector,
 )
+from mitigator import Mitigator
 
 
 # ---------------------------------------------------------------------------
@@ -1976,14 +1977,12 @@ class TestEDRResponseChain(unittest.TestCase):
     # --- Step 1: Process Kill ---
 
     def test_kill_mode_sends_sigkill(self):
-        det = self._det(action_mode="kill")
-        det._record_alert(99999, "evil", "Test", severity="high")
+        m = Mitigator(action_mode="kill")
         with mock.patch("os.kill") as mock_kill, \
-             mock.patch.object(det, "_step_quarantine", return_value=None), \
-             mock.patch.object(det, "_step_network_isolate"), \
-             mock.patch.object(det, "_step_harden_binary"):
-            det.take_action(99999, "evil", "Test")
-            # Should have called os.kill with SIGKILL for the main PID
+             mock.patch.object(m, "_step_quarantine", return_value=None), \
+             mock.patch.object(m, "_step_network_isolate"), \
+             mock.patch.object(m, "_step_harden_binary"):
+            m.take_action(99999, "evil", "Test", severity="high")
             calls = [c for c in mock_kill.call_args_list if c[0][0] == 99999]
             self.assertTrue(
                 any(c[0][1] == signal_mod.SIGKILL for c in calls),
@@ -1991,13 +1990,12 @@ class TestEDRResponseChain(unittest.TestCase):
             )
 
     def test_suspend_mode_sends_sigstop(self):
-        det = self._det(action_mode="suspend")
-        det._record_alert(99999, "evil", "Test", severity="high")
+        m = Mitigator(action_mode="suspend")
         with mock.patch("os.kill") as mock_kill, \
-             mock.patch.object(det, "_step_quarantine", return_value=None), \
-             mock.patch.object(det, "_step_network_isolate"), \
-             mock.patch.object(det, "_step_harden_binary"):
-            det.take_action(99999, "evil", "Test")
+             mock.patch.object(m, "_step_quarantine", return_value=None), \
+             mock.patch.object(m, "_step_network_isolate"), \
+             mock.patch.object(m, "_step_harden_binary"):
+            m.take_action(99999, "evil", "Test", severity="high")
             calls = [c for c in mock_kill.call_args_list if c[0][0] == 99999]
             self.assertTrue(
                 any(c[0][1] == signal_mod.SIGSTOP for c in calls),
@@ -2005,16 +2003,15 @@ class TestEDRResponseChain(unittest.TestCase):
             )
 
     def test_kill_targets_children(self):
-        det = self._det(action_mode="kill")
-        det._record_alert(99999, "evil", "Test", severity="high")
+        m = Mitigator(action_mode="kill")
         with mock.patch("os.kill") as mock_kill, \
              mock.patch.object(
-                 RansomwareDetector, "_get_child_pids", return_value=[10001, 10002]
+                 Mitigator, "_get_child_pids", return_value=[10001, 10002]
              ), \
-             mock.patch.object(det, "_step_quarantine", return_value=None), \
-             mock.patch.object(det, "_step_network_isolate"), \
-             mock.patch.object(det, "_step_harden_binary"):
-            det.take_action(99999, "evil", "Test")
+             mock.patch.object(m, "_step_quarantine", return_value=None), \
+             mock.patch.object(m, "_step_network_isolate"), \
+             mock.patch.object(m, "_step_harden_binary"):
+            m.take_action(99999, "evil", "Test", severity="high")
             killed_pids = {c[0][0] for c in mock_kill.call_args_list}
             self.assertIn(10001, killed_pids)
             self.assertIn(10002, killed_pids)
@@ -2023,59 +2020,51 @@ class TestEDRResponseChain(unittest.TestCase):
     # --- Step 2: Quarantine ---
 
     def test_quarantine_copies_binary(self):
-        det = self._det(action_mode="kill")
+        m = Mitigator(action_mode="kill")
         with tempfile.TemporaryDirectory() as qdir:
-            det.quarantine_dir = qdir
-            # Create a fake binary
+            m.quarantine_dir = qdir
             fake_bin = os.path.join(qdir, "evil_bin")
             with open(fake_bin, "w") as f:
                 f.write("malicious code")
             os.chmod(fake_bin, 0o755)
 
-            result = det._step_quarantine(99999, "evil", fake_bin)
+            result = m._step_quarantine(99999, "evil", fake_bin)
             self.assertIsNotNone(result)
             self.assertTrue(os.path.exists(result))
-            # Quarantined file should have no permissions
             mode = os.stat(result).st_mode & 0o777
             self.assertEqual(mode, 0o000)
 
     def test_quarantine_nonexistent_binary_returns_none(self):
-        det = self._det(action_mode="kill")
-        result = det._step_quarantine(99999, "evil", "/no/such/binary")
+        m = Mitigator(action_mode="kill")
+        result = m._step_quarantine(99999, "evil", "/no/such/binary")
         self.assertIsNone(result)
 
     # --- Step 3: Network Isolation ---
 
     def test_network_isolation_calls_iptables(self):
-        det = self._det(action_mode="kill", enable_network_isolation=True)
+        m = Mitigator(action_mode="kill", enable_network_isolation=True)
         with mock.patch.object(
-            RansomwareDetector, "_get_pid_uid", return_value=1000
+            Mitigator, "_get_pid_uid", return_value=1000
         ), mock.patch("subprocess.run") as mock_run:
-            det._step_network_isolate(99999, "evil")
+            m._step_network_isolate(99999, "evil")
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
             self.assertIn("iptables", cmd)
             self.assertIn("1000", cmd)
 
     def test_network_isolation_disabled_by_default(self):
-        det = self._det(action_mode="kill")
+        m = Mitigator(action_mode="kill")
         with mock.patch("subprocess.run") as mock_run:
-            det._step_network_isolate(99999, "evil")
+            m._step_network_isolate(99999, "evil")
             mock_run.assert_not_called()
 
     # --- Step 4: Remediation ---
 
-    def test_remediation_tracks_modified_files(self):
-        det = self._det(action_mode="kill")
-        det._pid_modified_files[99999] = [
-            "/home/user/doc1.docx",
-            "/home/user/doc2.pdf",
-            "/home/user/doc1.docx",  # Duplicate
-        ]
+    def test_remediation_logs_modified_files(self):
+        m = Mitigator(action_mode="kill")
+        files = ["/home/user/doc1.docx", "/home/user/doc2.pdf", "/home/user/doc1.docx"]
         # Should not crash; just logs
-        det._step_remediate(99999, "evil")
-        # Verify the tracking is populated
-        self.assertEqual(len(det._pid_modified_files[99999]), 3)
+        m._step_remediate(99999, "evil", files)
 
     def test_write_events_populate_modified_files(self):
         det = self._det(action_mode="simulate")
@@ -2088,38 +2077,37 @@ class TestEDRResponseChain(unittest.TestCase):
     # --- Step 5: Rollback ---
 
     def test_rollback_triggers_snapshot(self):
-        det = self._det(action_mode="kill", snapshot_cmd="echo snapshot_ok")
-        det._record_alert(99999, "evil", "Test", severity="critical")
+        m = Mitigator(action_mode="kill", snapshot_cmd="echo snapshot_ok")
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.Mock(returncode=0, stderr="")
-            det._step_rollback(99999, "evil")
+            m._step_rollback(99999, "evil")
             mock_run.assert_called_once()
-            self.assertTrue(det._snapshot_triggered)
+            self.assertTrue(m._snapshot_triggered)
 
     def test_rollback_only_triggers_once(self):
-        det = self._det(action_mode="kill", snapshot_cmd="echo snapshot_ok")
+        m = Mitigator(action_mode="kill", snapshot_cmd="echo snapshot_ok")
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.Mock(returncode=0, stderr="")
-            det._step_rollback(99999, "evil")
-            det._step_rollback(99999, "evil")
+            m._step_rollback(99999, "evil")
+            m._step_rollback(99999, "evil")
             mock_run.assert_called_once()
 
     def test_rollback_skipped_without_cmd(self):
-        det = self._det(action_mode="kill", snapshot_cmd=None)
+        m = Mitigator(action_mode="kill", snapshot_cmd=None)
         with mock.patch("subprocess.run") as mock_run:
-            det._step_rollback(99999, "evil")
+            m._step_rollback(99999, "evil")
             mock_run.assert_not_called()
 
     # --- Step 6: Binary Hardening ---
 
     def test_harden_strips_exec_bit(self):
-        det = self._det(action_mode="kill")
+        m = Mitigator(action_mode="kill")
         with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
             f.write(b"malicious")
             fake_bin = f.name
         try:
             os.chmod(fake_bin, 0o755)
-            det._step_harden_binary(99999, "evil", fake_bin, None)
+            m._step_harden_binary(99999, "evil", fake_bin, None)
             mode = os.stat(fake_bin).st_mode
             self.assertFalse(mode & stat.S_IXUSR)
             self.assertFalse(mode & stat.S_IXGRP)
@@ -2128,35 +2116,40 @@ class TestEDRResponseChain(unittest.TestCase):
             os.unlink(fake_bin)
 
     def test_harden_adds_to_blocklist(self):
-        det = self._det(action_mode="kill")
-        det._step_harden_binary(99999, "evil", "/usr/bin/evil", None)
-        self.assertIn("/usr/bin/evil", det.blocklist)
+        m = Mitigator(action_mode="kill")
+        m._step_harden_binary(99999, "evil", "/usr/bin/evil", None)
+        self.assertIn("/usr/bin/evil", m.blocklist)
 
     # --- Full chain integration ---
 
     def test_full_chain_executes_all_steps(self):
         """In kill mode, all 6 steps should execute for a critical alert."""
-        det = self._det(
+        m = Mitigator(
             action_mode="kill",
             snapshot_cmd="echo snap",
             enable_network_isolation=True,
         )
-        det._record_alert(99999, "evil", "Test", severity="critical")
-
         with mock.patch("os.kill"), \
-             mock.patch.object(
-                 RansomwareDetector, "_resolve_exe", return_value="/tmp/fake_evil"
-             ), \
-             mock.patch.object(det, "_step_quarantine", return_value="/quarantine/evil") as m_quar, \
-             mock.patch.object(det, "_step_network_isolate") as m_net, \
+             mock.patch.object(m, "_step_quarantine", return_value="/quarantine/evil") as m_quar, \
+             mock.patch.object(m, "_step_network_isolate") as m_net, \
              mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.Mock(returncode=0, stderr="")
-            det.take_action(99999, "evil", "Test")
-
+            m.take_action(
+                99999, "evil", "Test", severity="critical",
+                resolve_exe_fn=lambda pid: "/tmp/fake_evil",
+            )
             m_quar.assert_called_once()
             m_net.assert_called_once()
-            self.assertTrue(det._snapshot_triggered)
-            self.assertIn("/tmp/fake_evil", det.blocklist)
+            self.assertTrue(m._snapshot_triggered)
+            self.assertIn("/tmp/fake_evil", m.blocklist)
+
+    def test_detector_delegates_to_mitigator(self):
+        """Detector.take_action should call mitigator.take_action."""
+        det = self._det(action_mode="simulate")
+        det._record_alert(99999, "evil", "Test", severity="high")
+        with mock.patch.object(det.mitigator, "take_action") as m_action:
+            det.take_action(99999, "evil", "Test")
+            m_action.assert_called_once()
 
 
 if __name__ == "__main__":
