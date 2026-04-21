@@ -13,10 +13,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 
 # Well-known magic bytes for common file types.
-# Each entry maps a human-readable label to the byte prefix that identifies
-# the format.  When a WRITE event overwrites these leading bytes with
-# high-entropy data it is a strong signal that the file is being encrypted
-# in-place.
+# When a WRITE event overwrites these leading bytes with high-entropy
+#  data it is a strong signal that the file is being encrypted in-place.
 MAGIC_BYTES = {
     "PDF":  b"%PDF",
     "PNG":  b"\x89PNG",

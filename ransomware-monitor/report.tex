@@ -391,4 +391,526 @@ To cover the breadth of what eBPF enabled in the context of security, our group 
     \label{fig:net_filt_test2}
 \end{figure}
 
+\end{document}\documentclass[twocolumn, 10pt]{scrartcl}
+\setlength{\parindent}{0pt}
+\usepackage{amsmath,amssymb,amsthm,amsfonts,amscd}
+\usepackage{multirow}
+\usepackage{rotating}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{animate}
+\usepackage{bbm}
+\usepackage{colortbl}
+\usepackage{enumerate}
+% \usepackage[tmargin=1in, bmargin=1in, lmargin=0.75in, rmargin=0.75in]{geometry}
+\usepackage[margin=0.6in, includefoot]{geometry}
+\usepackage[colorlinks]{hyperref}
+\usepackage{mathtools}
+\usepackage[framemethod=tikz]{mdframed}
+\usepackage{doi}
+\usepackage{framed}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{mathrsfs}
+\usepackage{esvect}
+\usepackage{commath}
+\usepackage{lastpage}
+\usepackage{mathpazo}
+% \usepackage{tgpagella}
+\usepackage{anyfontsize}
+\usepackage{tkz-graph}
+\usepackage[linesnumbered,ruled,vlined]{algorithm2e}
+\usepackage[capitalize, nameinlink]{cleveref}
+\newcommand\mycommfont[1]{\normalsize\ttfamily{#1}}
+\SetCommentSty{mycommfont}
+\SetArgSty{textup}
+\usepackage[square,numbers]{natbib}
+\usepackage{verbatim}
+\usepackage{titlesec}
+\titleformat{\section}[block]{\sffamily\Large\filcenter\bfseries}{\S\thesection.}{0.25cm}{\Large}
+\titleformat{\subsection}[block]{\large\bfseries\sffamily}{\thesubsection.}{0.2cm}{\large}
+\titleformat{\subsubsection}[block]{\large\bfseries\sffamily}{\normalsize\thesubsubsection.}{0.15cm}{\normalsize}
+\usepackage{listings} % For code listings
+
+% Define the colors for the code highlighting
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+% Configure the code listing style
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{blue},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\normalsize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2
+}
+
+\titleformat{\paragraph}[runin]{\normalsize\bfseries\sffamily}{\theparagraph}{1em}{}
+
+\newcommand{\todo}[1]{{\color{red} Todo: #1}}
+\newcommand{\email}[1]{\href{mailto:#1}{\texttt{#1}}}
+\lstset{style=mystyle}
+
+\usepackage{fancyhdr}
+\usepackage{microtype}
+% \renewcommand\thesubsection{\thesection.\alph{subsection}}
+
+\Crefname{algocf}{Algorithm}{Algorithms}
+
+
+\newcommand{\hr}[1]{\rule{\linewidth}{#1}}
+
+\title{\textbf{Ransomware Mitigation and \\ Network Filtering for IoT using eBPF}}
+\subtitle{\textcolor{gray}{CS380S Course Project}}
+\author{
+    % \normalsize Anish Banerjee \\ \normalsize ab87743 \\ \normalsize \email{anish@cs.utexas.edu} \and 
+    % \normalsize David Bockelman \\ \normalsize mb64566 \\ \normalsize \email{Add email} \and 
+    % \normalsize Vaagishwaran Sivakumar \\ \normalsize vs28699 \\ \normalsize \email{sivak049@cs.utexas.edu} \and 
+    % \normalsize Danny Tran \\ \normalsize dlt2836  \\ \normalsize \email{dannyltran@utexas.edu}
+     \large Anish Banerjee         \\ \normalsize ab87743  \and 
+     \large David Bockelman        \\ \normalsize mb64566  \and 
+     \large Vaagishwaran Sivakumar \\ \normalsize vs28699  \and 
+     \large Danny Tran             \\ \normalsize dlt2836 
+     }
+% \date{Jan-April 2026}
+\date{}
+\begin{document}
+
+\onecolumn
+\maketitle
+\vspace{50pt}
+\begin{center}
+  \begin{minipage}{\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figures/image.png}
+    \vspace{40pt}
+    eBPF Security Applications Explored in our Project (Image by Gemini)
+  \end{minipage}
+\end{center}
+
+
+
+\clearpage
+\twocolumn
+%% Guidelines %%
+% Cover/title page (doesn't count against the limit)
+% • Include name/title of your project, names & EID of team members
+% Body of the paper (2 pages).
+% • Project goal. E.g., prevent security bugs, understanding perf. etc.
+% • Background on software you are modifying/modifying.
+% • Previously discussed concerns on security, performance. E.g. cite CVEs, bugs
+% • Describe your approach: tools, techniques, etc.
+% • Describe your progress. What have you done so far? What is left?
+% • Related work (research papers that solve similar problems)
+
+
+% For your full report, you can expand your introduction a bit pointing out commonalities in the incidents that you can target/leverage etc. 
+% For the ransomware mitigation --- in theory, you may want to do more after detecting an issue, e.g., removing the exec bit from the offending binary or quarantining it. Even if you don't implement it, you can discuss what strategies AV tools normally take after detecting an issue. 
+% For the network filtering --- similarly, you may want to consider how long some IPs remain on blocklists (you should look through literature if permanent blocks or some timed window blocks are more appropriate). Additionally, you should consider if there are ways someone can send traffic with a spoofed IP (e.g., UDP traffic) that can trick your computer into blocking essential services like email etc.
+\section{Project Aim}
+% Extended Berkeley Packet Filter (eBPF) is a powerful kernel technology that allows custom, sandboxed programs to run directly within the operating system kernel without requiring modifications to the kernel source code or the loading of custom modules. 
+% By safely extending kernel capabilities, eBPF provides unprecedented, low-latency visibility into system operations.
+In this project, we aim to study the utility of Extended Berkeley Packet Filter (eBPF) to ensure system security, particularly focusing on two domains: 
+(1) \textbf{Ransomware detection and mitigation} and 
+(2) \textbf{Network packet filtering for Internet of Things (IoT)}. 
+
+% Ransomware has emerged as one of the most significant threats to modern computing environments, targeting the availability of user data by encrypting files and demanding ransom payments. Traditional security solutions often rely on signature-based detection, which can be easily bypassed by zero-day variants. Our objective is to leverage the deep kernel visibility and low-overhead instrumentation provided by eBPF to monitor file system activities in real-time. By analyzing behavioral patterns—such as rapid file encryption, suspicious file renaming, and high-entropy write operations—we aim to build a robust, low-latency defense mechanism capable of identifying and halting ransomware attacks before they can cause widespread damage.
+
+\section{Background}
+
+\paragraph{Extended Berkeley Packet Filter (eBPF).}
+eBPF is a revolutionary technology that allows running sandboxed programs in the Linux kernel without changing kernel source code or loading kernel modules. Originally designed for network packet filtering, eBPF has evolved into a general-purpose execution engine for system-wide observability, security, and performance monitoring. 
+By attaching eBPF programs to various hooks such as tracepoints, kprobes, and LSM (Linux Security Modules) hooks, developers can intercept system calls and kernel functions with minimal performance impact.
+
+\paragraph{eBPF v/s BPF.}
+Classic BPF (cBPF), introduced in 1992, was a minimal in-kernel virtual machine designed solely for packet filtering: it offered a fixed two-register architecture, a limited instruction set restricted to forward jumps, and could only return accept/reject verdicts on network packets. eBPF, merged into the Linux kernel from version 3.18 onward, is a substantial generalization. It extends the register file to ten 64-bit general-purpose registers, supports arbitrary control flow including bounded loops (verified at load time), and provides a rich helper-function API for interacting with kernel data structures. Crucially, eBPF programs can attach to a wide variety of hooks beyond networking---tracepoints, kprobes, uprobes, perf events, LSM hooks, and cgroup callbacks---making it a general-purpose kernel extension mechanism~\cite{ebpf_advantages}. The eBPF verifier statically checks every program before loading to guarantee memory safety, bounded execution, and no kernel crashes, which is what makes it safe to run user-supplied code in kernel context. For our project, these capabilities are essential: cBPF could filter packets but could never intercept \texttt{write} syscalls, sample data buffers, or maintain per-process state in hash maps---all of which our ransomware monitor relies on.
+
+\paragraph{Ransomware.}
+Ransomware is a class of malware that disrupts system operations by encrypting a victim's files, effectively holding their data hostage until a ransom is paid. 
+The attack life-cycle typically involves initial infection, lateral movement, and finally, the encryption phase where user-generated content (documents, photos, databases) is encrypted using strong cryptographic algorithms like AES or RSA. 
+
+Detection of ransomware is inherently difficult because the act of reading and writing files is a standard behavior for many legitimate applications. 
+% % Add in main
+However, ransomware exhibits distinct "signals" during its execution that can be monitored to catch them: 
+\begin{itemize}
+    \item \textbf{High Entropy Writes}: Encrypted data lacks the structure of plain text or standard file formats, resulting in high Shannon entropy (approaching 8 bits per byte).
+    \item \textbf{High-Frequency I/O}: To maximize the amount of data encrypted before being caught, ransomware often processes files at a much higher rate than a human user or typical background task.
+    \item \textbf{Massive File Deletions/Renames}: Some ransomware strains delete the original file after creating an encrypted copy or move files across directories.
+    \item \textbf{File Extension Changes}: Many variants rename files to include specific extensions (e.g., \texttt{.locked}, \texttt{.crypto}) or create temporary files with these extensions, to signal that the data has been encrypted.
+\end{itemize}
+
+\paragraph{Distributed Denial of Service (DDoS).}
+DoS attacks overwhelm a target system — such as a server, website, or network — with traffic, preventing legitimate users from accessing it. Distributed DoS (DDoS) attacks extend this by coordinating traffic from many distributed machines simultaneously, making them significantly harder to detect, filter, and mitigate.
+
+\paragraph{Internet of Things (IoT).} 
+IoT refers to physical devices equipped with sensors, computing capabilities, and software that connect to networks and communicate data over the Internet. %\cite{tolay2025ebpf}.
+With billions of deployed devices typically designed to be resource-constrained and lacking robust security, IoT represents a large and vulnerable attack surface. Thus are susceptible to DDoS attacks and prime targets for botnet recruitment for DDoS attacks — as demonstrated by the Mirai botnet \cite{antonakakis2017understanding}.
+% , which leveraged hundreds of thousands of compromised IoT devices to launch large-scale DDoS attacks.
+
+\section{Prior work}
+\paragraph{Ransomware Detection and Mitigation.}
+Ransomware actors routinely exploit high-severity CVEs to compromise enterprise infrastructure. Notable examples include CVE-2021-44228 (Log4Shell), which enabled unauthenticated remote code execution and was leveraged by LockBit~\cite{cisa_lockbit2023}; and CVE-2026-20131 (CVSS 10.0), an insecure deserialization flaw in Cisco Firewall Management Center exploited as a zero-day by the Interlock ransomware group for over a month before disclosure~\cite{cve2026_20131}.
+% the ProxyShell chain (CVE-2021-34473, CVE-2021-34523, CVE-2021-31207), which allowed pre-authenticated RCE on Microsoft Exchange~\cite{cisa_topvulns2022}; and CVE-2023-28252, a Windows CLFS driver privilege escalation exploited by Nokoyawa ransomware~\cite{cisa_kev}.
+% % Add in main
+% Conventional defenses against such threats fall into several categories, each with well-documented limitations. \textit{Signature-based detection} fails against novel or polymorphic variants~\cite{ispahany2024}, \textit{static analysis} is defeated by obfuscation~\cite{alraizza2023}, \textit{dynamic sandbox analysis} is slow and vulnerable to evasion~\cite{alraizza2023}, and \textit{honeypot-based methods} are inherently reactive, triggering only after encryption has begun~\cite{ispahany2024}. 
+
+To address these gaps, researchers have turned to eBPF, which enables low-overhead, kernel-level behavioral monitoring without kernel modification. 
+\cite{zhuravchak2023} demonstrated eBPF's viability for tracking ransomware-relevant syscalls and network activity. 
+\cite{higuchi2023,zhuravchak2023real} built a real-time eBPF-based detection systems that collect file operation events and apply ML classification. 
+% \cite{philippart2024} further proposed running decision tree and MLP inference directly inside the kernel, showing that in-kernel detection is critical given the speed of modern encryption. Sekar et al.
+\cite{sekar2024} combined eBPF tracepoints with NLP-based ransom note analysis, achieving 99.76\%  detection accuracy within seconds. 
+% Despite this progress, eBPF-specific ransomware detection remains nascent~\cite{philippart2024}, motivating the approach presented in this work.
+\paragraph{Network Filtering for IoT.}
+Traditional DDoS defenses such as ACLs, rate limiting, and signature-based IDS/IPS \cite{roesch1999snort, bouziani2019comparative} are effective in conventional systems but demand compute and memory unavailable on IoT devices. Similarly, deep learning approaches that detect abnormal traffic patterns \cite{niyaz2016deep, abdulrahman2025deep} are typically too resource-intensive for constrained hardware. eBPF addresses this by enabling safe, low-overhead programmability within the Linux kernel for custom packet processing and security logic \cite{vieira2020fast}. Combined with XDP, which operates at the earliest point in the network stack, eBPF can filter and drop malicious traffic before it consumes significant resources, and has been used to implement high-performance firewalls and IDS with minimal overhead \cite{hadi2024ikern}, making it a promising direction for IoT network security.
+
+\section{Our Approach}
+
+\subsection{Ransomware Detection and Mitigation}
+Our approach to ransomware detection and mitigation is inspired by \cite{sekar2024} and utilizes a dual-component architecture consisting of a kernel-space eBPF monitor and a user-space analysis engine. 
+% \begin{enumerate}
+\paragraph{Kernel-level Instrumentation.}
+We use eBPF tracepoints to intercept critical system calls related to file I/O operations. Specifically, we hook into:
+\begin{itemize}
+    \item \texttt{sys\_enter\_openat}: To monitor file creation and suspicious extensions.
+    \item \texttt{sys\_enter\_write}: To capture data buffer samples and track the volume of data being written.
+    \item \texttt{sys\_enter\_rename}: To detect mass renaming of files.
+    \item \texttt{sys\_enter\_unlink}, \texttt{sys\_enter\_unlinkat}: To monitor high-frequency file deletions, a common post-encryption behavior.
+    \item \texttt{sys\_enter\_getdents64}: To detect rapid directory traversal, a signature of ransomware scanning for targets before encryption.
+    \item \texttt{sys\_enter\_fchmodat}, \texttt{sys\_enter\_fchownat}: To detect rapid metadata changes that may lock users out of their own files.
+\end{itemize}
+
+The eBPF program is written in restricted C and utilizes \texttt{BPF\_PERF\_OUTPUT} to stream event data to user-space. For each intercepted call, we collect the Process ID, the process name, the target filename, and a 128-byte sample of the write buffer. To stay within the kernel's stack limit, we use a \texttt{BPF\_PERCPU\_ARRAY} as a scratch buffer for event data.
+
+\paragraph{User-space Heuristic Engine.}
+A Python-based agent, built using the BCC library, processes the stream of eBPF events and applies several detection heuristics:
+\begin{itemize}
+    \item \textit{Entropy Analysis}: For every write event, we calculate the Shannon entropy of the sampled buffer. If a process consistently writes high-entropy data ($> 6.3$ bits per byte), it is flagged as potentially performing encryption.
+    \item \textit{Frequency Tracking}: We maintain a sliding time window (typically 1 second) for each process. If a process exceeds a threshold of writes per window, those writes target multiple distinct files, and the average entropy is high, the process is classified as suspicious.
+    \item \textit{Extension Filtering}: The engine maintains a list of suspicious extensions (e.g., \texttt{.locked}, \texttt{.crypto}). Any \texttt{openat} or \texttt{rename} event involving these extensions triggers an immediate alert.
+\end{itemize}
+
+\paragraph{False-Positive Reduction.}
+A key challenge in behavioral ransomware detection is that many legitimate applications---compilers, compression tools, video encoders, encryption utilities, databases---produce I/O patterns that overlap with ransomware signals. Our initial prototype flagged 18 out of 24 benign stress-test runs as positive (75\% false-positive rate). We addressed this through a layered set of techniques that shift detection from simple signal thresholds toward \emph{behavioral pattern matching}:
+
+\begin{enumerate}
+    \item \textbf{Process Whitelist with Integrity Verification.}
+    A configurable set of trusted process names (\texttt{gcc}, \texttt{dd}, \texttt{ffmpeg}, \texttt{gzip}, etc.) is skipped during analysis. To prevent adversaries from abusing whitelisted names, the whitelist is hardened with two checks: (a)~\emph{binary hash verification}, which computes the SHA-256 of \texttt{/proc/<pid>/exe} and compares it against known-good digests, and (b)~\emph{process lineage validation}, which walks the parent-process chain via \texttt{/proc/<pid>/status} and requires at least one trusted ancestor (e.g., \texttt{bash}, \texttt{systemd}, \texttt{make}). Either check failing revokes the whitelist.
+
+    Dual-use tools that appear in both legitimate and attack contexts (\texttt{gpg}, \texttt{openssl}, \texttt{7z}, \texttt{ccencrypt}) are deliberately \emph{not} whitelisted, so they always pass through the full heuristic pipeline.
+
+    \item \textbf{Write Target Classification.}
+    Writes to system paths (\texttt{/dev/}, \texttt{/proc/}, \texttt{/sys/}, \texttt{/var/lib/}, \texttt{/var/log/}, etc.) are excluded from all heuristics. This prevents false positives from disk defragmenters writing to block devices or databases writing to \texttt{/var/lib/}.
+
+    \item \textbf{File Diversity Scoring.}
+    Rather than alerting on raw write frequency alone, we track how many \emph{unique file paths} and \emph{unique parent directories} a process writes to within the time window. A defragmenter writing to the same file 50 times produces no diversity alert; ransomware encrypting files across \texttt{\textasciitilde/Documents}, \texttt{\textasciitilde/Pictures}, and \texttt{\textasciitilde/Desktop} does.
+
+    \item \textbf{Multi-File Gating for In-Place Overwrite and Magic-Byte Alerts.}
+    We detect when a process writes high-entropy data back to a file it previously opened (in-place overwrite) and when write buffers lack recognized file-type headers (magic bytes destroyed). However, both checks now require the process to have overwritten \emph{at least two distinct files}. This is the critical insight that separates legitimate single-file encryption (\texttt{ccencrypt} on one file) from ransomware (encrypting many files in-place). The single-file gate reduced benign encryption false positives to zero without sacrificing detection of bulk encryption.
+
+    \item \textbf{Output-to-Input Path Correlation.}
+    Legitimate tools produce output with predictable naming: \texttt{data.csv}~$\to$~\texttt{data.csv.gz}, \texttt{secret.txt}~$\to$~\texttt{secret.txt.gpg}. Ransomware renames to unrelated extensions (\texttt{.locked}, \texttt{.a1b2c3}). The detector maintains a list of known legitimate output suffixes and suppresses in-place overwrite alerts when the output name is a plausible derivative of a recently-opened file.
+
+    \item \textbf{Write-Then-Delete Correlation.}
+    We track recent high-entropy write targets per process. When an \texttt{unlink} deletes a file that is \emph{not} one of the recent write targets (i.e., the original, not the encrypted copy), and the process has written to three or more distinct files recently, a critical alert fires. The threshold of three ensures single-file \texttt{gzip} (write \texttt{.gz}, delete source) passes silently.
+
+    \item \textbf{Directory Traversal Detection.}
+    Rapid \texttt{getdents64} calls (directory listing) combined with concurrent write activity trigger a ``scan-then-encrypt'' alert. Directory scanning alone (e.g., \texttt{find}) does not trigger without accompanying writes.
+
+    \item \textbf{Canary (Honeypot) Files.}
+    Hidden sentinel files are deployed in sensitive directories. Any non-whitelisted process accessing a canary triggers an immediate critical alert regardless of other heuristics, providing a zero-false-positive tripwire.
+\end{enumerate}
+
+\paragraph{Trusted-Child Process-Tree Attribution.}
+We extended the detector to cover a specific blind spot: a non-whitelisted ransomware orchestrator delegating encryption to a trusted child process such as \texttt{ccencrypt}. The eBPF monitor now captures each event's parent PID in-kernel at syscall time. When a whitelisted child performs a high-entropy write, the child itself still does not alert, but the detector can attribute that write to the nearest non-whitelisted ancestor with an active behavioral profile and then re-evaluate the parent's heuristics. In effect, this lets the detector combine the parent's traversal and deletion activity with the child's write activity without disabling the whitelist for benign shell-launched tools.
+
+\paragraph{Slow-Burn Detection via Cumulative Profiling.}
+All of the heuristics above operate within a sliding time window (default 1\,s). A ransomware variant that encrypts one file every few minutes---a ``slow-burn'' attack---would never accumulate enough events in any single window to trigger an alert. To address this, we maintain a \emph{cumulative per-process profile} that is never pruned. Each high-entropy write to a new unique user file adds $+1$ to the profile score; each new parent directory adds $+2$; each deletion of a file the process did not write (i.e., deleting an original after encrypting a copy) adds $+3$; and each in-place overwrite adds $+5$. When the score crosses a configurable threshold (default 15), a critical ``Slow-burn ransomware'' alert fires. Duplicate writes to the same file are counted only once, low-entropy writes are ignored, and whitelisted processes never accumulate a profile. This allows the detector to catch an attacker encrypting files across \texttt{\textasciitilde/Documents}, \texttt{\textasciitilde/Pictures}, and \texttt{\textasciitilde/Desktop} over the course of minutes or hours, even though no single second looked alarming.
+
+\paragraph{Mitigation.}
+The mitigation subsystem supports three configurable action modes: \texttt{simulate} (log only, for tuning), \texttt{suspend} (\texttt{SIGSTOP} to freeze the process for administrator review), and \texttt{kill} (\texttt{SIGKILL} for immediate termination). The \texttt{suspend} mode is recommended for production, as it halts damage while preserving forensic state. Additionally, on the first critical-severity alert, the agent can trigger an automated filesystem snapshot via a configurable shell command, integrating with COW filesystems such as Btrfs or ZFS for near-zero data loss.
+
+\paragraph{Post-Detection Response in Production AV/EDR Tools.}
+Modern Endpoint Detection and Response (EDR) platforms such as CrowdStrike Falcon and SentinelOne employ a graduated response chain that goes well beyond process termination~\cite{cybervigilance_s1}. Upon detecting ransomware-like behavior, these tools typically execute a sequence of containment and remediation actions:
+
+\begin{enumerate}
+    \item \textbf{Process Kill.} The malicious process tree is terminated immediately, including child processes, to halt ongoing encryption.
+    \item \textbf{Quarantine.} The offending binary is moved to a secure, sandboxed location on the endpoint where it cannot execute or interact with the filesystem. This preserves the sample for forensic analysis while neutralizing it.
+    \item \textbf{Network Isolation.} The compromised endpoint is disconnected from the local network while maintaining a management channel back to the EDR console. This prevents lateral movement and C2 communication without losing remote investigation capability.
+    \item \textbf{Remediation.} The EDR agent reverses filesystem changes made by the malicious process: encrypted files are restored, dropped payloads are deleted, and modified registry entries or scheduled tasks are reverted.
+    \item \textbf{Rollback.} Some platforms (notably SentinelOne) maintain Volume Shadow Copy (VSS) snapshots and can restore the entire endpoint to a pre-infection state, effectively undoing all ransomware damage including file encryption.
+    \item \textbf{Binary Hardening.} The executable bit can be stripped from the offending binary, or the file can be added to a persistent block list so that it cannot be re-executed even if the quarantine is bypassed.
+\end{enumerate}
+
+Our current implementation covers all six steps: process kill with child-process targeting (step~1), binary quarantine with permission stripping (step~2), network isolation via iptables owner-match rules (step~3), modified-file tracking for remediation (step~4), filesystem snapshots via configurable Btrfs/ZFS commands (step~5), and exec-bit stripping with persistent blocklist maintenance (step~6). The response mode is selectable via \texttt{--action-mode}: \texttt{simulate} logs all steps without executing them, \texttt{suspend} uses \texttt{SIGSTOP} at step~1 for human-in-the-loop review, and \texttt{kill} executes the full chain with \texttt{SIGKILL}.
+
+\subsection{Network Filtering for IoT Edge Devices}
+% This portion of the project primarily aims to recreate the results of \cite{tolay2025ebpf} alongside further testing in more realistic setups with other users alongside the attacker. This work proposes a lightweight defense system for protecting IoT devices from DDoS attacks using eBPF and XDP that operate inside the Linux kernel. The goal is to create a lightweight DDoS defense mechanism for resource constrained edge devices. 
+% % The method consists of two complementary security strategies. First, detection is performed using eBPF and XDP for high-speed incoming packet filtering. Second, a traditional user-space blocking mechanism using iptables is employed. The initial in-kernel filtering reduces system load, enabling the user-space component to operate effectively without being overwhelmed. Finally, we explain the experimental setup in the final paragraph.
+
+% % \subsubsection{Detection: eBPF/XDP-Based Packet detection}\label{sec:ebpf-xdp-detection}
+% \paragraph{Detection: eBPF/XDP-Based Packet detection. }
+% The detection component is implemented as an eBPF program attached to XDP, enabling real-time, per-source-IP packet rate monitoring at the earliest point in the network stack. For each incoming packet, the program extracts the source IP address and maintains a hash map which stores the unique IP and corresponding packet counts. The method then evaluates whether the count exceeds a predefined threshold within a given time window. If this threshold is breached, the source is classified as potentially malicious, and an alert is generated using \texttt{bpf\_trace\_printk()}, which writes the IP address to the kernel trace pipe for consumption by user-space components.
+
+% % \subsubsection{Mitigation: User-Space Firewall Enforcement}\label{sec:user_space_blocking}
+% \paragraph{Mitigation: User-Space Firewall Enforcement. }
+% The mitigation strategy consists of two mechanisms operating in kernel and user space. First, immediate mitigation is performed directly within the XDP program to drop subsequent packets from IPs identified as malicious, preventing further processing of traffic from the attack. Second, a user-space controller, implemented in Python, continuously monitors the kernel trace pipe for alerts. Upon detecting a flagged IP address, it dynamically installs a blocking rule in the system firewall, ensuring persistent enforcement against the attacker. This user-space enables more complex response logic, such as logging and alerting.
+
+% % \subsubsection{Experimental Setup}\label{sec:network_exp_setup}
+% \paragraph{Experimental Setup}
+% To evaluate performance under realistic conditions, we employ the system on a Raspberry Pi as the victim device, a standard laptop as the attacker, generating high-rate UDP flood traffic using iperf3 at rates up to 100 Mbps, and a second laptop as a typical user. System performance will be assessed using several key metrics, including mitigation rate, CPU utilization across all cores, and overall responsiveness and stability under attack. 
+
+This portion of the project primarily aims to recreate and extend the results of~\cite{tolay2025ebpf} under more realistic conditions with concurrent benign users.
+
+\paragraph{eBPF/XDP-Based Packet Detection.}
+An eBPF program attached at XDP monitors per-source-IP packet rates in real time. Each incoming packet's source IP is looked up in a hash map; if the count exceeds a configurable threshold within a time window, the source is flagged and an alert is written to the kernel trace pipe via \texttt{bpf\_trace\_printk()}.
+
+\paragraph{User-Space Firewall Enforcement.}
+Mitigation operates at two levels: flagged IPs are immediately dropped in-kernel via \texttt{XDP\_DROP}, while a Python user-space controller monitors the trace pipe and installs persistent iptables blocking rules, additionally handling logging and alerting.
+
+\paragraph{Experimental Setup.}
+We deploy the system on a Raspberry Pi (victim), with a laptop generating UDP flood traffic via iperf3 at up to 100\,Mbps (attacker) and a second laptop as a benign user. We evaluate mitigation rate, CPU utilization, and system stability under attack.
+\section{Experiments and Evaluation}
+
+\subsection{Ransomware Experimental Setup}
+%%%
+\paragraph{Experiment Harness.}
+We evaluate the ransomware monitor using a small experiment harness that runs labeled scenarios in isolated per-run sandbox directories. Each scenario is specified as a row in a CSV file with a label, an expected process name, and a workload command. For each run, the harness launches the monitor, executes the workload inside the sandbox, collects structured alert output from the detector, and writes a results file containing the scenario label, whether the monitor predicted positive or negative, and the supporting logs needed for later analysis. This gives us a uniform pipeline for comparing very different workloads while still computing standard metrics such as true positives, false positives, true negatives, and false negatives.
+
+\paragraph{Four Complementary Test Families.}
+Our ransomware evaluation is intentionally split across four complementary families of tests, each probing a different aspect of the detector. The \emph{legacy suite} consists of self-written control scenarios that disentangle individual heuristics such as suspicious extensions, entropy, rename behavior, and unlink correlation. The \emph{Atomic Red Team T1486 suite} uses the official Linux \emph{Atomic Red Team} tests for ``Data Encrypted for Impact,'' giving us small, tool-level ATT\&CK-aligned adversary emulations. The \emph{benign stress suite} is derived from Phoronix-style workloads and uses legitimate compression, encryption, media, and compilation tasks to measure false positives under realistic high-I/O activity. Finally, the \emph{behavioral suite} contains ransomware-inspired process behaviors drawn from well-studied Linux ransomware families, allowing us to test whether a non-whitelisted process that behaves like ransomware is detected even when simple tool identity is no longer informative. Together, these four families let us separate heuristic correctness, tool-level adversary emulation, benign workload robustness, and full behavioral detection.
+
+\subsection{Ransomware Results}
+
+Tables~\ref{tab:ransomware_tuned_overall} and~\ref{tab:evalransom_updated_2} summarize the most recent full tuned run of the ransomware monitor. These results use the final tuned detector configuration evaluated across all four ransomware suites: legacy controls, Atomic Red Team T1486, benign stress workloads, and behavioral ransomware simulations.
+
+\begin{table*}[t]
+    \centering
+    \small
+    \begin{tabular}{lcccccccc}
+    \toprule
+    \textbf{Run} & \textbf{TP} & \textbf{FP} & \textbf{FN} & \textbf{TN} & \textbf{Precision} & \textbf{Recall} & \textbf{Specificity} & \textbf{Bal. Acc.} \\
+    \midrule
+    Full tuned combined run & 30 & 5 & 15 & 31 & 0.857 & 0.667 & 0.861 & 0.764 \\
+    \bottomrule
+    \end{tabular}
+    \caption{Overall ransomware-monitor performance in the most recent full tuned evaluation across all four ransomware suites.}
+    \label{tab:ransomware_tuned_overall}
+\end{table*}
+
+\begin{table}[t]
+    \centering
+    \small
+    \begin{tabular}{lccccc}
+    \toprule
+    \textbf{Suite} & \textbf{Runs} & \textbf{TP} & \textbf{FP} & \textbf{FN} & \textbf{TN} \\
+    \midrule
+    Legacy & 21 & 3 & 0 & 6 & 12 \\
+    Atomic T1486 & 12 & 3 & 0 & 9 & 0 \\
+    Benign Stress & 24 & 0 & 5 & 0 & 19 \\
+    Behavioral & 24 & 24 & 0 & 0 & 0 \\
+    \bottomrule
+    \end{tabular}
+    \caption{Suite-level breakdown for the most recent tuned ransomware evaluation.}
+    \label{tab:evalransom_updated_2}
+\end{table}
+
+\paragraph{Discussion.}
+The tuned results show a detector that is considerably stronger at avoiding false alarms than at recognizing every possible positive instance, but the quality of the behavioral detection is now much clearer. The overall specificity of $0.861$ reflects the effect of the false-positive reduction work: most benign stress workloads remain quiet, though a small number of benign encryption and compression cases still fire. More importantly, the behavioral suite now contributes 24/24 true positives across both the original ransomware-inspired workloads and the new higher-fidelity in-place overwrite variants. This means the detector continues to fire even when the workload removes cosmetic signals such as suspicious extensions, renamed outputs, and ransom-note-like artifacts.
+
+\section{Current Progress}
+
+\subsection{Ransomware}
+\paragraph{What we have Implemented.}
+\begin{itemize}
+    \item Developed a functional eBPF program that hooks into \texttt{openat}, \texttt{write}, \texttt{rename}, \texttt{unlink}/\texttt{unlinkat}, \texttt{getdents64}, \texttt{fchmodat}, and \texttt{fchownat} syscalls.
+    \item Implemented a user-space Python agent with real-time entropy calculation, frequency analysis, and a configurable mitigation loop implementing the full 6-step EDR response chain (process kill with child targeting, binary quarantine, network isolation via iptables, modified-file tracking for remediation, filesystem snapshots, and exec-bit stripping with blocklist).
+    \item Implemented eight false-positive reduction techniques (process whitelist with binary hash and lineage verification, write target classification, file diversity scoring, multi-file gating for in-place overwrite and magic-byte alerts, output-to-input path correlation, write-then-delete correlation, directory traversal detection, and canary files), reducing the false-positive rate on the benign stress suite from 75\% (18/24) to 0\% (0/24).
+    \item Implemented cumulative per-process profiling for slow-burn ransomware detection, catching attackers that encrypt files sporadically over minutes or hours rather than in a single burst.
+    \item Added structured JSON logging for SIEM ingestion, a systemd service unit for production deployment, and a comprehensive JSON configuration file format.
+    \item Evaluated the monitor on three test suites: a \emph{legacy suite} of seven hand-crafted scenarios, an \emph{Atomic Red Team T1486 suite}~\cite{atomic_red_team_T1486} comprising all four Linux tests, and a \emph{benign stress suite} of eight high-I/O workloads (7z, zstd, gzip compression; gpg, openssl, ccrypt encryption; ffmpeg transcoding; gcc compilation burst). Results are reported in \cref{tab:evalransom_updated}.
+    \item Developed a comprehensive unit test suite (140 tests) covering all detection heuristics, false-positive reduction mechanisms, slow-burn detection, and the EDR response chain.
+\end{itemize}
+
+\paragraph{Remaining Tasks.} The Atomic T1486 tests remain undetected because they are single-file encryption operations that are behaviorally identical to legitimate tool usage---the fundamental limitation of minimal reproduction tests. Detecting these would require either (a)~contextual signals beyond file I/O (e.g., network C2 communication, ransom note creation) or (b)~ML-based classification as explored by~\cite{higuchi2023,philippart2024}. We also aim to implement a kernel module baseline for overhead comparison and explore LSM hooks for in-kernel enforcement.
+
+\subsection{Network Filtering}
+\paragraph{What we have Implemented.} 
+
+\begin{itemize}
+    \item Developed a functional eBPF program that parses incoming packets, tracking per-source IP packet counts in a sliding 1-second window via a hash map; packets exceeding a configurable threshold are dropped with \texttt{XDP\_DROP} and an alert is issued to user space.
+    \item Implemented a Python controller that loads and attaches the XDP program to a network interface, configures the packet-rate threshold, and provides additional security measures including persistent iptables blocking and event logging.
+    \item Tested in a multi-container setup (victim, attacker, benign user) and deployed on a Raspberry Pi; results are reported in \cref{fig:net_filt_test1} \& \cref{fig:net_filt_test2}.
+\end{itemize}
+\paragraph{Remaining Tasks.} Some of next tasks include more extensive tests of the system with using another laptop as regular user and further stressing the system using many more attackers and evaluating the method. We plan to further ablate various components of the design, measuring the performance of the system without various components. We also hope to add an additional component to the system that we are still unsure of.
+
+\section{Limitations of our Work}
+
+\paragraph{Ransomware Detection.}
+Our behavioral heuristics are effective against ransomware that exhibits bulk encryption patterns (many files, multiple directories, high entropy) but cannot detect \emph{single-file} encryption operations that are behaviorally identical to legitimate tool usage. The Atomic Red Team T1486 tests illustrate this: each test encrypts exactly one file using a standard tool (\texttt{gpg}, \texttt{7z}, etc.), producing I/O indistinguishable from benign usage. Detecting such minimal operations without unacceptable false positives would require additional context---such as network C2 communication, ransom note creation, or ML-based classification of process behavior sequences~\cite{philippart2024}. Slow-burn attacks that spread encryption over minutes or hours are now addressed by the cumulative per-process profile, though an attacker that restarts under a new PID for each file could evade per-PID tracking.
+
+The process whitelist, while hardened with binary hash and lineage checks, relies on \texttt{/proc} availability and cannot protect against attacks that compromise the kernel itself. The BCC-based architecture compiles the eBPF program at runtime, introducing startup latency and a dependency on kernel headers; migrating to CO-RE with \texttt{libbpf} would address this but requires a significant rewrite.
+
+\paragraph{Network Filtering.}
+The current XDP-based filter operates on per-source-IP packet rates, which can be evaded by distributed attacks using many low-rate sources. UDP traffic with spoofed source IPs could trick the system into blocking legitimate services. The iptables-based persistent blocking uses permanent rules; a timed expiry mechanism would be more appropriate to avoid permanently blocking IPs that were only temporarily compromised.
+\section{Work Division}
+
+\subsection{Ransomware}
+\begin{itemize}
+    \item Anish contributed the kernel-space eBPF monitor, the heuristic design for ransomware behavior characterization, and the user-space agent including all eight false-positive reduction techniques, the cumulative slow-burn profiling system, the 6-step EDR response chain, structured JSON logging, and the systemd service integration. 
+    \item  Vaagish implemented the experiment harness for labeled scenarios and workloads, the pipeline to calculate the metrics, integrated the official \emph{Atomic Red Team T1486}~\cite{atomic_red_team_T1486} suite and the benign stress suite, and designed the benign workload scenarios that drove the false-positive reduction work.
+\end{itemize}
+
+
+\subsection{Network Filtering}
+\begin{itemize}
+    \item David contributed the initial environment setup. 
+    \item Danny contributed the initial implementations of the eBPF + XDP packet detection and controller. 
+    \item David and Danny pair programmed testing the code in a VM and testing with Docker containers for the victim, attacker, and a benign agent. 
+    \item David deployed the victim on a Raspberry Pi and the attacker on another laptop and ran experiments and collected results.
+\end{itemize}  
+\paragraph{\textbf{Future Responsibilities:}} David and Danny plan on jointly setting up a more complex testing environment where there is an additional benign computer and setting up more complex attacks to simulate together. Then will work on evaluating these various components and experimental setups.
+
+\clearpage
+\bibliography{references}
+\bibliographystyle{alphaurl}
+
+\clearpage
+\appendix
+{\Large\begin{center}\underline{\textbf{Supplementary Material}}\end{center}}
+\section{Ransomware Experiment Results}
+    \begin{table}[!ht]
+        \centering
+        \begin{tabular}{|c|c|c|c|c|c|c|}
+        \hline
+             & \textbf{Precision} & \textbf{Recall} & \textbf{TP} & \textbf{FP} & \textbf{TN} & \textbf{FN} \\ \hline
+            \textbf{Legacy} & 1.0 &  0.67 & 2 & 0 & 4 & 1\\ \hline
+            \textbf{Atomic} & 1.0 & 0.75 & 3 & 0 & 0 & 1 \\ \hline 
+        \end{tabular}
+        \caption{Baseline ransomware monitor performance \emph{before} false-positive reduction. The legacy and Atomic suites contain no benign high-I/O workloads, so FP\,=\,0 is misleading.}
+        \label{tab:evalransom}
+    \end{table}
+
+    \begin{table}[!ht]
+        \centering
+        \begin{tabular}{|c|c|c|c|c|c|c|}
+        \hline
+             & \textbf{Prec.} & \textbf{Recall} & \textbf{TP} & \textbf{FP} & \textbf{TN} & \textbf{FN} \\ \hline
+            \multicolumn{7}{|l|}{\textit{Before false-positive reduction}} \\ \hline
+            Benign Stress & 0.0 & --- & 0 & 18 & 6 & 0 \\ \hline
+            \multicolumn{7}{|l|}{\textit{After false-positive reduction}} \\ \hline
+            Legacy & 1.0 & 0.33 & 1 & 0 & 4 & 2 \\ \hline
+            Atomic T1486 & --- & 0.0 & 0 & 0 & 0 & 4 \\ \hline
+            Benign Stress & --- & --- & 0 & 0 & 24 & 0 \\ \hline
+            \textbf{Combined} & \textbf{1.0} & \textbf{0.14} & \textbf{1} & \textbf{0} & \textbf{28} & \textbf{6} \\ \hline
+        \end{tabular}
+        \caption{Ransomware monitor performance after false-positive reduction, evaluated across all three suites (3 repeats each). The benign stress suite includes 7z, zstd, gzip compression; gpg, openssl, ccrypt encryption; ffmpeg transcoding; and gcc compilation. FP dropped from 18/24 to 0/24. The Atomic T1486 tests became FN because they are single-file operations behaviorally identical to legitimate encryption (see \S Limitations).}
+        \label{tab:evalransom_updated}
+    \end{table}
+
+    \begin{figure}[!ht]
+        \begin{center}
+        \includegraphics[width=1\linewidth]{figures/confusion_ransomware_monitor.png}
+        \end{center}
+        \caption{Confusion Matrices for Ransomware Monitor (baseline, before false-positive reduction)}
+        \label{fig:confusion}
+    \end{figure}
+
+\section{Ransomware Experiment Detailed}
+
+\paragraph{Evaluation Philosophy.}
+The ransomware monitor is evaluated using four complementary suites that probe different parts of the design. The legacy control suite checks whether narrow heuristic triggers still fire in isolation. The Atomic Red Team T1486 suite provides ATT\&CK-aligned tool-level adversary emulations. The benign stress suite measures false positives under realistic legitimate workloads. The behavioral suite tests whether a non-whitelisted process that looks like ransomware in its file-system behavior is actually detected.
+
+\subsection{Legacy Control Suite}
+The legacy suite consists of self-authored control scenarios in \texttt{scenarios.csv}. These cases are intentionally small and targeted so that a miss usually maps to one heuristic or one integration boundary rather than to an ambiguous workload.
+
+\begin{itemize}
+    \item \texttt{pos\_touch\_locked}: creates a file with a suspicious extension and tests the extension filter on file creation.
+    \item \texttt{pos\_rename\_locked}: renames a benign file to \texttt{.locked} and tests suspicious rename handling.
+    \item \texttt{pos\_dd\_urandom}: writes high-entropy bytes with \texttt{dd} and probes the entropy-plus-frequency path.
+    \item \texttt{neg\_touch\_txt}, \texttt{neg\_dd\_zero}, \texttt{neg\_plaintext\_appends}, and \texttt{neg\_archive\_workload}: exercise benign file creation, zero-entropy writes, frequent low-entropy appends, and sustained archival I/O.
+\end{itemize}
+
+\paragraph{Interpretation.}
+In the most recent tuned run, the legacy suite produced TP$=3$, FP$=0$, TN$=12$, and FN$=6$ across 21 runs. The most reliable positive control remains \texttt{pos\_touch\_locked}. The rename case is still weaker because short-lived rename activity can be missed if the event does not reach user space before the monitor is torn down. The \texttt{dd} case is now a systematic miss because \texttt{dd} is treated as a trusted utility. This is a deliberate precision--recall tradeoff: the detector gives up sensitivity to a contrived \texttt{dd}-based overwrite pattern in exchange for suppressing a common source of benign high-I/O noise.
+
+\subsection{Atomic Red Team T1486 Suite}
+The Atomic suite uses the official Linux \emph{Atomic Red Team} T1486 workloads and therefore gives us small, tool-level ATT\&CK-style adversary emulations. These tests are valuable because they are externally sourced and technique aligned, but they are also intentionally atomic: each scenario exercises one tool on one file rather than a full multi-file ransomware kill chain.
+
+\begin{itemize}
+    \item \texttt{pos\_atomic\_t1486\_gpg\_official}: encrypts a file with \texttt{gpg}.
+    \item \texttt{pos\_atomic\_t1486\_7z\_official}: creates a password-protected archive with \texttt{7z}.
+    \item \texttt{pos\_atomic\_t1486\_ccrypt\_official}: encrypts a file in place with \texttt{ccencrypt}.
+    \item \texttt{pos\_atomic\_t1486\_openssl\_official}: encrypts a file with \texttt{openssl}.
+\end{itemize}
+
+\paragraph{Interpretation.}
+In the most recent tuned run, the Atomic suite produced TP$=3$ and FN$=9$ across 3 runs. This suite demonstrates a central limitation of tool-level behavioral detection: one-file encryption by a common utility often does not exhibit the broader multi-file traversal, diversity, rename, or delete patterns that the detector is strongest at recognizing. It is therefore useful as a technique-aligned stress test, but it is not the best stand-in for full ransomware behavior.
+
+\subsection{Benign Stress Suite}
+The benign stress suite is built from Phoronix-style workloads and is entirely negative-labeled. Its role is to measure false positives under realistic high-I/O tasks that legitimately produce compressed, encoded, or encrypted output and that therefore overlap with ransomware signals at the byte-pattern level.
+
+\begin{itemize}
+    \item \texttt{neg\_7z\_compress}, \texttt{neg\_zstd\_compress}, \texttt{neg\_gzip\_compress}: benign compression workloads.
+    \item \texttt{neg\_gpg\_encrypt\_benign}, \texttt{neg\_openssl\_encrypt\_benign}, \texttt{neg\_ccencrypt\_encrypt\_benign}: benign single-file encryption workloads.
+    \item \texttt{neg\_ffmpeg\_transcode}: benign media encoding.
+    \item \texttt{neg\_gcc\_compile\_burst}: benign compilation burst producing many object files.
+\end{itemize}
+
+\paragraph{Interpretation.}
+In the most recent tuned run, the benign suite produced FP$=5$ and TN$=19$. The remaining false positives are concentrated in a small number of legitimate encryption and compression workflows. Two of them came from helper-heavy compression runs in which a \texttt{dd} helper was lineage-revoked under the workload. More broadly, the benign suite still shows that some legitimate ciphertext-producing workloads remain hard to separate cleanly from attacker-like behavior using file-system signals alone.
+\subsection{Behavioral Ransomware Simulation Suite}
+The behavioral suite is the most realistic evaluation of the detector's intended use case. Each scenario is a single process with a non-whitelisted kernel task name whose file-system behavior is inspired by documented Linux ransomware families, rather than merely invoking a known encryption utility once.
+
+\begin{itemize}
+    \item \texttt{pos\_ransim\_walk}: a directory-walk encryptor inspired by the RansomEXX Linux variant, a single ELF binary that recursively encrypts files within target directories and appends encrypted key material needed for later decryption~\cite{kaspersky_ransomexx,profero_ransomexx}.
+    \item \texttt{pos\_ransim\_del}: an encrypt-then-delete workflow inspired by the broader encrypt-then-destroy pattern seen in ransomware operations, including FiveHands deleting recovery artifacts to inhibit restoration after encryption~\cite{cisa_fivehands}.
+    \item \texttt{pos\_ransim\_rename}: an overwrite-and-rename workflow inspired by the Cl0p Linux variant, which encrypts targeted files in place via \texttt{mmap64}/\texttt{munmap} and uses family-specific output naming~\cite{sentinelone_cl0p}.
+    \item \texttt{pos\_ransim\_slow}: a throttled encryption variant used to probe sliding-window sensitivity.
+    \item \texttt{pos\_ransim\_delegate}: a delegated-encryption workflow in which the parent orchestrator spawns a trusted child encryptor.
+    \item \texttt{pos\_ransim\_inplace}: a higher-fidelity in-place overwrite variant that destroys file contents without renaming outputs or adding suspicious extensions, more closely matching the syscall-level behavior described in published RansomEXX Linux analyses~\cite{profero_ransomexx}.
+    \item \texttt{pos\_ransim\_inplace\_del}: an in-place overwrite-then-delete variant representing a more destructive wiper-ransomware hybrid pattern.
+    \item \texttt{pos\_ransim\_inplace\_slow}: a throttled in-place overwrite variant that removes cosmetic signals while probing the sliding-window robustness of the monitor.
+\end{itemize}
+
+We distinguish between \emph{invariant} behavioral signals, which are actions the attacker must perform to achieve the attack objective, such as directory traversal and high-entropy overwrites of many files, and \emph{cosmetic} signals that the attacker could trivially omit or vary, such as file-extension changes and ransom-note filenames. The higher-fidelity in-place variants (\texttt{inplace}, \texttt{inplace\_del}, \texttt{inplace\_slow}) deliberately omit these cosmetic signals, letting us test whether the detector catches the underlying behavior rather than superficial indicators.
+
+\paragraph{Interpretation.}
+In the most recent tuned run, the behavioral suite produced TP$=24$ and FN$=0$ across all 24 runs. This is the strongest evidence that the detector works well when an unknown process actually behaves like ransomware over multiple files and directories. The delegated case is particularly important because it now validates the process-tree attribution extension: trusted child writes are attributed back to the active non-whitelisted parent, so the parent accumulates the missing entropy evidence instead of the child silently absorbing it under the whitelist. The three higher-fidelity in-place variants strengthen the result further: they remain true positives even after removing cosmetic signals such as renamed outputs and suspicious extensions. The limitation is that these simulators first create the plaintext corpus and then overwrite it under the same PID and within the same monitored session, so the earlier creation opens seed \texttt{open\_tracker}. That means the current implementation still has an easier path here than it would on a truly pre-existing victim corpus opened without \texttt{O\_CREAT}.
+
+\subsection{Cross-Suite Takeaways}
+Across the full tuned run, the combined ransomware evaluation produced TP$=30$, FP$=5$, FN$=15$, and TN$=31$, corresponding to precision $0.857$, recall $0.667$, specificity $0.861$, and balanced accuracy $0.764$. The detector is therefore much stronger at avoiding false alarms than at recognizing every possible positive instance, but the picture improves substantially when the workload resembles a real ransomware process rather than a one-file tool invocation.
+
+The most informative cross-suite pattern is the gap between tool-level and workflow-level evaluation. The Atomic and benign suites show that isolated one-file encryption or compression workloads can remain ambiguous when viewed only through low-level file-I/O signals, especially once trust-policy choices are introduced. The behavioral suite, in contrast, shows that the detector is much more decisive when it sees a process exhibit a fuller ransomware-style file-system kill chain.
+
+The behavioral suite shows the intended recovery path. Rather than trying to classify every trusted or dual-use tool invocation, the detector performs best when it sees a non-whitelisted process traversing directories, touching many files, deleting originals, renaming outputs, or otherwise matching a ransomware kill chain. In the current tuned run it recovered all 24 of 24 behavioral positives, including the higher-fidelity in-place overwrite variants. The trusted-child extension improves that story further by letting a malicious parent inherit high-entropy write evidence from a trusted child helper without disabling the whitelist globally.
+
+
+\section{Network Filtering Experiment Results}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1\linewidth]{figures/test1_cpu_usage.png}
+    \caption{CPU utilization measured using mpstat across normal traffic, attack traffic without the XDP filter, and attack traffic with the XDP filter.}
+    \label{fig:net_filt_test1}
+\end{figure}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=1\linewidth]{figures/test2_latency.png}
+    \caption{Packet latency for legitimate traffic while the victim experiences normal traffic, attack traffic without the XDP filter, and attack traffic with the XDP filter.}
+    \label{fig:net_filt_test2}
+\end{figure}
+
 \end{document}
