@@ -60,17 +60,18 @@ DEFAULT_WHITELISTED_PROCESSES = {
 }
 
 # Prefixes that identify non-user-file write targets.  Writes to these
-# paths are typical of defragmenters, databases, and system services and
-# should NOT contribute to the ransomware entropy/frequency heuristic.
+# Prefixes that identify non-user-file write targets.  Writes to these
+# paths are excluded from the ransomware entropy/frequency heuristic.
+#
+# Only truly virtual or hardware-backed paths are excluded.  /var/lib/
+# and /var/log/ are intentionally NOT excluded because databases and
+# application logs stored there are real ransomware targets.
 SYSTEM_PATH_PREFIXES = (
-    "/dev/",        # Block / character devices
-    "/proc/",       # Procfs
-    "/sys/",        # Sysfs
-    "/run/",        # Runtime state
+    "/dev/",        # Block / character devices — not real files
+    "/proc/",       # Procfs — virtual, no user data
+    "/sys/",        # Sysfs — virtual, no user data
+    "/run/",        # Runtime state — ephemeral, recreated on boot
     "/tmp/.",       # Hidden temp files (e.g. .nfs locks)
-    "/var/log/",    # Log files
-    "/var/lib/",    # Package / database state
-    "/var/cache/",  # Caches
 )
 
 # Common user-file extensions that ransomware targets.  Used by the file

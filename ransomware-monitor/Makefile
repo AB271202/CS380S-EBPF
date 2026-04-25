@@ -20,7 +20,7 @@ mount:
 	sudo mount -t tracefs nodev /sys/kernel/debug/tracing || true
 
 unit-test:
-	python3 -m unittest tests/test_detector.py -v
+	python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 deps:
 	sudo apt-get update
@@ -123,14 +123,14 @@ exp-run-tuned-all:
 	@echo "\n=== Behavioral ===" && python3 experiments/metrics.py --results experiments/out/behavioral_tuned/results.csv
 	@echo "\n=== Combined ===" && python3 experiments/metrics.py --results experiments/out/tuned_all/results.csv
 
+# --- Cleanup ---
+
 exp-clean-tuned:
 	rm -rf experiments/out/legacy_tuned \
 	      experiments/out/atomic_tuned \
 	      experiments/out/benign_tuned \
 	      experiments/out/behavioral_tuned \
 	      experiments/out/tuned_all
-
-# --- Cleanup ---
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

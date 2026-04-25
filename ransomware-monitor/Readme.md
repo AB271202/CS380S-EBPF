@@ -279,10 +279,21 @@ This threshold of 3 ensures that single-file compression (`gzip data.csv` → de
 
 ### Running the Unit Tests
 
-The false-positive reduction features are covered by `tests/test_detector.py` (113 tests). Run them with:
+The detection engine is covered by four test modules in `tests/`:
+
+\begin{itemize}
+    \item \texttt{test\_basic\_detection.py} — entropy, frequency, extensions, unlinks, magic bytes, combined scenarios
+    \item \texttt{test\_false\_positive\_reduction.py} — whitelist, hash verification, lineage, canary files, write classification, diversity, traversal, in-place overwrite, path correlation, write-then-delete, defrag vs ransomware, legitimate encryption
+    \item \texttt{test\_advanced\_detection.py} — process-tree attribution, slow-burn profiling, urandom tracking, kill signal detection
+    \item \texttt{test\_mitigation.py} — EDR response chain (kill/suspend, quarantine, network isolation, remediation, rollback)
+\end{itemize}
+
+Run them with:
 
 ```bash
-python3 -m unittest tests/test_detector.py -v
+make unit-test
+# or
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 Test categories:

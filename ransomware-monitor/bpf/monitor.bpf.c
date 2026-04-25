@@ -231,9 +231,9 @@ int kprobe__do_send_sig_info(struct pt_regs *ctx) {
     int sig = (int)PT_REGS_PARM1(ctx);
     struct task_struct *target = (struct task_struct *)PT_REGS_PARM3(ctx);
 
-    // Only track SIGKILL (9) and SIGTERM (15) — the signals ransomware
-    // uses to kill AV, backup, and database processes.
-    if (sig != 9 && sig != 15) {
+    // Only track SIGKILL (9), SIGTERM (15), and SIGSTOP (19) — the signals
+    // ransomware uses to kill or suspend processes.
+    if (sig != 9 && sig != 15 && sig != 19) {
         return 0;
     }
 

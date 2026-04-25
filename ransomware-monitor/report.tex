@@ -158,10 +158,10 @@ Detection of ransomware is inherently difficult because the act of reading and w
 % % Add in main
 However, ransomware exhibits distinct "signals" during its execution that can be monitored to catch them: 
 \begin{itemize}
-    \item \textbf{High Entropy Writes}: Encrypted data lacks the structure of plain text or standard file formats, resulting in high Shannon entropy (approaching 8 bits per byte).
-    \item \textbf{High-Frequency I/O}: To maximize the amount of data encrypted before being caught, ransomware often processes files at a much higher rate than a human user or typical background task.
-    \item \textbf{Massive File Deletions/Renames}: Some ransomware strains delete the original file after creating an encrypted copy or move files across directories.
-    \item \textbf{File Extension Changes}: Many variants rename files to include specific extensions (e.g., \texttt{.locked}, \texttt{.crypto}) or create temporary files with these extensions, to signal that the data has been encrypted.
+    \item \textit{High Entropy Writes}: Encrypted data lacks the structure of plain text or standard file formats, resulting in high Shannon entropy (approaching 8 bits per byte).
+    \item \textit{High-Frequency I/O}: To maximize the amount of data encrypted before being caught, ransomware often processes files at a much higher rate than a human user or typical background task.
+    \item \textit{Massive File Deletions/Renames}: Some ransomware strains delete the original file after creating an encrypted copy or move files across directories.
+    \item \textit{File Extension Changes}: Many variants rename files to include specific extensions (e.g., \texttt{.locked}, \texttt{.crypto}) or create temporary files with these extensions, to signal that the data has been encrypted.
 \end{itemize}
 
 \paragraph{Distributed Denial of Service (DDoS).}
@@ -175,97 +175,144 @@ With billions of deployed devices typically designed to be resource-constrained 
 \section{Prior work}
 \paragraph{Ransomware Detection and Mitigation.}
 Ransomware actors routinely exploit high-severity CVEs to compromise enterprise infrastructure. Notable examples include CVE-2021-44228 (Log4Shell), which enabled unauthenticated remote code execution and was leveraged by LockBit~\cite{cisa_lockbit2023}; and CVE-2026-20131 (CVSS 10.0), an insecure deserialization flaw in Cisco Firewall Management Center exploited as a zero-day by the Interlock ransomware group for over a month before disclosure~\cite{cve2026_20131}.
-% the ProxyShell chain (CVE-2021-34473, CVE-2021-34523, CVE-2021-31207), which allowed pre-authenticated RCE on Microsoft Exchange~\cite{cisa_topvulns2022}; and CVE-2023-28252, a Windows CLFS driver privilege escalation exploited by Nokoyawa ransomware~\cite{cisa_kev}.
+the ProxyShell chain (CVE-2021-34473, CVE-2021-34523, CVE-2021-31207), which allowed pre-authenticated RCE on Microsoft Exchange~\cite{cisa_topvulns2022}; and CVE-2023-28252, a Windows CLFS driver privilege escalation exploited by Nokoyawa ransomware~\cite{cisa_kev}.
 % % Add in main
-% Conventional defenses against such threats fall into several categories, each with well-documented limitations. \textit{Signature-based detection} fails against novel or polymorphic variants~\cite{ispahany2024}, \textit{static analysis} is defeated by obfuscation~\cite{alraizza2023}, \textit{dynamic sandbox analysis} is slow and vulnerable to evasion~\cite{alraizza2023}, and \textit{honeypot-based methods} are inherently reactive, triggering only after encryption has begun~\cite{ispahany2024}. 
+
+Conventional defenses against such threats fall into several categories, each with well-documented limitations:
+\begin{itemize}
+    \item \textit{Signature-based detection} matches files against a database of known malware patterns, but fails against novel or polymorphic variants~\cite{ispahany2024}.
+    \item \textit{Static analysis} examines binaries without execution, but is defeated by obfuscation and code mutation~\cite{alraizza2023}.
+    \item \textit{Dynamic sandbox analysis} observes program behavior in an isolated environment, but is slow and vulnerable to sandbox-evasion techniques~\cite{alraizza2023}.
+    % \item \textit{Honeypot-based methods} place decoy files to detect unauthorized access, but are inherently reactive, triggering only after encryption has begun~\cite{ispahany2024}.
+\end{itemize}
 
 To address these gaps, researchers have turned to eBPF, which enables low-overhead, kernel-level behavioral monitoring without kernel modification. 
 \cite{zhuravchak2023} demonstrated eBPF's viability for tracking ransomware-relevant syscalls and network activity. 
 \cite{higuchi2023,zhuravchak2023real} built a real-time eBPF-based detection systems that collect file operation events and apply ML classification. 
-% \cite{philippart2024} further proposed running decision tree and MLP inference directly inside the kernel, showing that in-kernel detection is critical given the speed of modern encryption. Sekar et al.
+\cite{philippart2024} further proposed running decision tree and MLP inference directly inside the kernel, showing that in-kernel detection is critical given the speed of modern encryption. 
 \cite{sekar2024} combined eBPF tracepoints with NLP-based ransom note analysis, achieving 99.76\%  detection accuracy within seconds. 
 % Despite this progress, eBPF-specific ransomware detection remains nascent~\cite{philippart2024}, motivating the approach presented in this work.
+
+
 \paragraph{Network Filtering for IoT.}
 Traditional DDoS defenses such as ACLs, rate limiting, and signature-based IDS/IPS \cite{roesch1999snort, bouziani2019comparative} are effective in conventional systems but demand compute and memory unavailable on IoT devices. Similarly, deep learning approaches that detect abnormal traffic patterns \cite{niyaz2016deep, abdulrahman2025deep} are typically too resource-intensive for constrained hardware. eBPF addresses this by enabling safe, low-overhead programmability within the Linux kernel for custom packet processing and security logic \cite{vieira2020fast}. Combined with XDP, which operates at the earliest point in the network stack, eBPF can filter and drop malicious traffic before it consumes significant resources, and has been used to implement high-performance firewalls and IDS with minimal overhead \cite{hadi2024ikern}, making it a promising direction for IoT network security.
 
 \section{Our Approach}
 
 \subsection{Ransomware Detection and Mitigation}
-Our approach to ransomware detection and mitigation is inspired by \cite{sekar2024} and utilizes a dual-component architecture consisting of a kernel-space eBPF monitor and a user-space analysis engine. 
+Our approach to ransomware detection and mitigation utilizes a dual-component architecture consisting of a kernel-space eBPF monitor and a user-space analysis engine. \cite{sekar2024} provides an instructive analysis of characteristics of typical ransomware, that we reproduce below for reference:
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Feature} & \textbf{REvil} & \textbf{HelloKitty} & \textbf{WannaCry} \\
+\midrule
+Unlink   & High & Med  & High \\
+Urandom  & High & Low  & Low  \\
+Pkill    & High & High & High \\
+Rename   & High & High & High \\
+Write    & High & High & High \\
+OpenSSL  & Low  & High & High \\
+CPU utilization     & High & High & High \\
+Openat   & High & High & High \\
+\bottomrule
+\end{tabular}
+\caption{Primary Syscall Invocations Across Ransomware Variants During Ransomware Execution \cite{sekar2024}}
+\label{tab:ransomchar}
+\end{table}
 % \begin{enumerate}
-\paragraph{Kernel-level Instrumentation.}
-We use eBPF kprobes to intercept critical system calls and kernel functions related to file I/O and process management. Specifically, we hook into:
+\paragraph{Kernel-level Instrumentation (\texttt{monitor.bpf.c}).} 
+We use eBPF kprobes to intercept critical system calls and kernel functions related to file I/O and process management, according to \cref{tab:ransomchar}. Specifically, we hook into:
 \begin{itemize}
     \item \texttt{do\_sys\_openat2}: To monitor file opens, track filenames for write correlation, and detect access to \texttt{/dev/urandom} or \texttt{/dev/random} (emitted as a distinct \texttt{URANDOM\_READ} event type, since ransomware reads from the kernel entropy pool to generate encryption keys).
     \item \texttt{ksys\_write}: To capture data buffer samples and track the volume of data being written.
-    \item \texttt{do\_renameat2}: To detect mass renaming of files.
-    \item \texttt{do\_unlinkat}: To monitor high-frequency file deletions, a common post-encryption behavior.
-    \item \texttt{iterate\_dir}: To detect rapid directory traversal (\texttt{getdents64}), a signature of ransomware scanning for targets before encryption.
-    \item \texttt{do\_send\_sig\_info}: To intercept \texttt{SIGKILL} and \texttt{SIGTERM} delivery, capturing the target process name. Ransomware commonly kills antivirus, backup, and database processes before encrypting.
+    \item \texttt{do\_renameat2}: To detect mass renaming of files from their original names to custom encrypted file extensions.
+    \item \texttt{do\_unlinkat}: To monitor high-frequency file deletions, a common post-encryption behavior. The ransomware variants often create temporary \texttt{.lck} or \texttt{.temp} files as intermediary files between the original file and the final encrypted file. After creating the final encrypted file, the ransomware deletes these temporary files using the unlink or unlinkat system calls.
+    \item \texttt{iterate\_dir}: To detect rapid directory traversal, a signature of ransomware scanning for targets before encryption.
+    \item \texttt{do\_send\_sig\_info}: To intercept \texttt{SIGKILL} and \texttt{SIGTERM} delivery, capturing the target process name. Ransomware typically terminates all running processes before encrypting them, and kills open file handles, ensuring no interruptions occur during the file encryption process.
 \end{itemize}
+ % You might notice they don't look like standard system calls (which usually start with sys_). There are two reasons for this:
+ %   * Stability: Hooking slightly deeper functions like do_sys_openat2 is often more stable across different Linux        
+ %     versions than hooking the raw syscall interface.
+ %   * Bypassing "Wrappers": On modern 64-bit Linux (especially in environments like WSL2), syscalls are often wrapped in a
+ %     way that makes it hard for eBPF to read the arguments (like filenames or PIDs). Hooking the "worker" functions      
+ %     inside the kernel (like do_send_sig_info) provides direct access to the actual data structures the kernel is using. 
 
 The eBPF program is written in restricted C and utilizes \texttt{BPF\_PERF\_OUTPUT} to stream event data to user-space. For each intercepted call, we collect the Process ID, parent PID, the process name, the target filename, and a 128-byte sample of the write buffer. To stay within the kernel's stack limit, we use a \texttt{BPF\_PERCPU\_ARRAY} as a scratch buffer for event data.
 
-\paragraph{User-space Heuristic Engine.}
+\paragraph{User-space Detector (\texttt{detector.py}).}
 A Python-based agent, built using the BCC library, processes the stream of eBPF events and applies several detection heuristics:
 \begin{itemize}
-    \item \textit{Entropy Analysis}: For every write event, we calculate the Shannon entropy of the sampled buffer. If a process consistently writes high-entropy data ($> 6.3$ bits per byte), it is flagged as potentially performing encryption.
+    \item \textit{Entropy Analysis}: For every write event, we calculate the Shannon entropy of the sampled buffer. If a process consistently writes high-entropy data ($> 6.3$ bits per byte \todo{explain this metric}), it is flagged as potentially performing encryption.
+    
     \item \textit{Frequency Tracking}: We maintain a sliding time window (typically 1 second) for each process. If a process exceeds a threshold of writes per window, those writes target multiple distinct files, and the average entropy is high, the process is classified as suspicious.
+    
     \item \textit{Extension Filtering}: The engine maintains a list of suspicious extensions (e.g., \texttt{.locked}, \texttt{.crypto}). Any \texttt{openat} or \texttt{rename} event involving these extensions triggers an immediate alert.
+    
+    \item \textit{Directory Traversal Detection.}
+    Rapid \texttt{getdents64} calls (directory listing) combined with concurrent write activity trigger a ``scan-then-encrypt'' alert. Directory scanning alone (e.g., \texttt{find}) does not trigger without accompanying writes.
+    
+    \item \textit{Canaries.}
+    Hidden canary files are deployed in sensitive directories. Any non-whitelisted process accessing a canary triggers an immediate critical alert regardless of other heuristics, providing a zero-false-positive tripwire. The implementation wires canary directories and whitelist configuration through the monitor entry point, so these controls are reachable in ordinary end-to-end tests when configured.
 \end{itemize}
 
 \paragraph{False-Positive Reduction.}
-A key challenge in behavioral ransomware detection is that many legitimate applications---compilers, compression tools, video encoders, encryption utilities, databases---produce I/O patterns that overlap with ransomware signals. Our initial prototype flagged 18 out of 24 benign stress-test runs as positive (75\% false-positive rate). We addressed this through a layered set of techniques that shift detection from simple signal thresholds toward \emph{behavioral pattern matching}:
+A key challenge in behavioral ransomware detection is that many legitimate applications---compilers, compression tools, video encoders, encryption utilities, databases---produce I/O patterns that overlap with ransomware signals. 
+% Our initial prototype flagged 18 out of 24 benign stress-test runs as positive (75\% false-positive rate). 
+We addressed this through a layered set of techniques that shift detection from simple signal thresholds toward \emph{behavioral pattern matching}:
 
 \begin{enumerate}
-    \item \textbf{Process Whitelist with Integrity Verification.}
+    \item \textit{Process Whitelist with Integrity Verification.}
     A configurable set of trusted process names (\texttt{gcc}, \texttt{dd}, \texttt{ffmpeg}, \texttt{gzip}, \texttt{gpg}, etc.) is skipped during analysis. To prevent adversaries from abusing whitelisted names, the whitelist is hardened with two checks: (a)~\emph{binary hash verification}, which computes the SHA-256 of \texttt{/proc/<pid>/exe} and compares it against known-good digests, and (b)~\emph{process lineage validation}, which walks the parent-process chain via \texttt{/proc/<pid>/status} and requires at least one trusted ancestor (e.g., \texttt{bash}, \texttt{systemd}, \texttt{make}). Either check failing revokes the whitelist. The trust policy explicitly favors suppressing one-file invocations of common encryption and archival tools over trying to classify those invocations as ransomware on behavior alone.
 
     % Dual-use tools that appear in both legitimate and attack contexts (\texttt{gpg}, \texttt{openssl}, \texttt{7z}, \texttt{ccencrypt}) are deliberately \emph{not} whitelisted, so they always pass through the full heuristic pipeline. %% we started whitelisting these as well, choosing to completely let go of trying to catch single file writes; in the other cases, we catch ransomware using behavioral traits/heuristics not present in non-malicious use cases.
 
-    \item \textbf{Write Target Classification.}
-    Writes to system paths (\texttt{/dev/}, \texttt{/proc/}, \texttt{/sys/}, \texttt{/var/lib/}, \texttt{/var/log/}, etc.) are excluded from all heuristics. This prevents false positives from disk defragmenters writing to block devices or databases writing to \texttt{/var/lib/}.
+    \item \textit{Write Target Classification.}
+    Writes to system paths (\texttt{/dev/}, \texttt{/proc/}, \texttt{/sys/}, etc.) are excluded from all heuristics. This prevents false positives from disk defragmenters writing to block devices or databases writing to \texttt{/var/lib/}. Though it may appear to be insecure against ransomware, in practice this is a lower risk than it sounds, for two reasons:
 
-    \item \textbf{File Diversity Scoring.}
+    (i) System paths are already protected by other mechanisms. Writes to /dev/sda require root. Writes to /proc/ and /sys/ are virtual filesystems that don't store user data. /var/lib/ is protected by file permissions. A process that has root access to write to block devices has already compromised the system beyond what a user-space monitor can defend against.
+
+    (ii) Ransomware targets user data, not system files. The business model depends on encrypting files the victim can't recreate — documents, photos, databases. System binaries and configs can be reinstalled. Real-world ransomware families (LockBit, Conti, BlackCat) overwhelmingly target /home, /srv, mounted shares, and database data directories, not /dev/ or /proc/.
+
+    \item \textit{File Diversity Scoring.}
     Rather than alerting on raw write frequency alone, we track how many \emph{unique file paths} and \emph{unique parent directories} a process writes to within the time window. A defragmenter writing to the same file 50 times produces no diversity alert; ransomware encrypting files across \texttt{\textasciitilde/Documents}, \texttt{\textasciitilde/Pictures}, and \texttt{\textasciitilde/Desktop} does.
 
-    \item \textbf{Multi-File Gating for In-Place Overwrite and Magic-Byte Alerts.}
-    We detect when a process writes high-entropy data back to a file it previously opened (in-place overwrite) and when write buffers lack recognized file-type headers (magic bytes destroyed). The eBPF layer now emits ordinary open events as well as creations, so these checks can observe true in-place modification paths rather than depending only on \texttt{O\_CREAT}. Both checks still require the process to have overwritten \emph{at least two distinct files}. This is the critical insight that separates legitimate single-file encryption (\texttt{ccencrypt} on one file) from ransomware (encrypting many files in-place).
+    \item \textit{In-Place Overwrites and Magic-Byte Alerts.}
+    We detect when a process writes high-entropy data back to a file it previously opened (in-place overwrite) and when write buffers lack recognized file-type headers (magic bytes destroyed). The eBPF layer emits ordinary open events as well as creations, so these checks can observe true in-place modification paths rather than depending only on \texttt{O\_CREAT}. Both checks still require the process to have overwritten \emph{at least two distinct files}. This is the critical insight that separates legitimate single-file encryption (\texttt{ccencrypt} on one file) from ransomware (encrypting many files in-place).
 
-    \item \textbf{Output-to-Input Path Correlation.}
-    Legitimate tools produce output with predictable naming: \texttt{data.csv}~$\to$~\texttt{data.csv.gz}, \texttt{secret.txt}~$\to$~\texttt{secret.txt.gpg}. Ransomware renames to unrelated extensions (\texttt{.locked}, \texttt{.a1b2c3}). The detector maintains a list of known legitimate output suffixes and suppresses in-place overwrite alerts when the output name is a plausible derivative of a recently-opened file.
+    \item \textit{Output-to-Input Correlation.}
+    Legitimate tools produce output with predictable naming, e.g. \texttt{data.csv}~$\to$~\texttt{data.csv.gz}. Ransomware renames to unrelated extensions (\texttt{.locked}, \texttt{.a1b2c3}). The detector maintains a list of known legitimate output suffixes and suppresses in-place overwrite alerts when the output name is a plausible derivative of a recently-opened file.
 
-    \item \textbf{Write-Then-Delete Correlation.}
+    \item \textit{Write-Then-Delete Correlation.}
     We track recent high-entropy write targets per process. When an \texttt{unlink} deletes a file that is \emph{not} one of the recent write targets (i.e., the original, not the encrypted copy), and the process has written to three or more distinct files recently, a critical alert fires. The threshold of three ensures single-file \texttt{gzip} (write \texttt{.gz}, delete source) passes silently.
-
-    \item \textbf{Directory Traversal Detection.}
-    Rapid \texttt{getdents64} calls (directory listing) combined with concurrent write activity trigger a ``scan-then-encrypt'' alert. Directory scanning alone (e.g., \texttt{find}) does not trigger without accompanying writes.
-
-    \item \textbf{Canary (Honeypot) Files.}
-    Hidden sentinel files are deployed in sensitive directories. Any non-whitelisted process accessing a canary triggers an immediate critical alert regardless of other heuristics, providing a zero-false-positive tripwire. The implementation wires canary directories and whitelist configuration through the monitor entry point, so these controls are reachable in ordinary end-to-end tests when configured.
 \end{enumerate}
 
-\paragraph{Trusted-Child Process-Tree Attribution.}
-We extended the detector to cover a specific blind spot: a non-whitelisted ransomware orchestrator delegating encryption to a trusted child process such as \texttt{ccencrypt}. The eBPF monitor now captures each event's parent PID in-kernel at syscall time. When a whitelisted child performs a high-entropy write, the child itself still does not alert, but the detector can attribute that write to the nearest non-whitelisted ancestor with an active behavioral profile and then re-evaluate the parent's heuristics. In effect, this lets the detector combine the parent's traversal and deletion activity with the child's write activity without disabling the whitelist for benign shell-launched tools.
+\paragraph{Fine-Grained Tightening.}
+\begin{enumerate}
+    \item \textit{Trusted-Child Process-Tree Attribution.}
+    We extended the detector to cover a specific blind spot: a non-whitelisted ransomware orchestrator delegating encryption to a trusted child process such as \texttt{ccencrypt}. The eBPF monitor now captures each event's parent PID in-kernel at syscall time. When a whitelisted child performs a high-entropy write, the child itself still does not alert, but the detector can attribute that write to the nearest non-whitelisted ancestor with an active behavioral profile and then re-evaluate the parent's heuristics. In effect, this lets the detector combine the parent's traversal and deletion activity with the child's write activity without disabling the whitelist for benign shell-launched tools.
 
-\paragraph{Slow-Burn Detection via Cumulative Profiling.}
-All of the heuristics above operate within a sliding time window (default 1\,s). A ransomware variant that encrypts one file every few minutes---a ``slow-burn'' attack---would never accumulate enough events in any single window to trigger an alert. To address this, we maintain a \emph{cumulative per-process profile} that is never pruned. Each high-entropy write to a new unique user file adds $+1$ to the profile score; each new parent directory adds $+2$; each deletion of a file the process did not write adds $+3$; each \texttt{/dev/urandom} read adds $+3$ (first access only); each \texttt{SIGKILL}/\texttt{SIGTERM} sent to another process adds $+4$; and each in-place overwrite adds $+5$. When the score crosses a configurable threshold (default 15), a critical ``Slow-burn ransomware'' alert fires. This design means that a process which reads \texttt{/dev/urandom} ($+3$), kills an antivirus process ($+4$), and encrypts two files across two directories ($+6$) already reaches a score of 13---one more file or kill away from the threshold. Duplicate writes to the same file are counted only once, low-entropy writes are ignored, and whitelisted processes never accumulate a profile.
+    \item \textit{Slow-Burn Detection via Cumulative Profiling.}
+    All of the heuristics above operate within a sliding time window (default 1\,s). A ransomware variant that encrypts one file every few minutes---a ``slow-burn'' attack---would never accumulate enough events in any single window to trigger an alert. To address this, we maintain a \emph{cumulative per-process profile} that is never pruned. Each high-entropy write to a new unique user file adds $+1$ to the profile score; each new parent directory adds $+2$; each deletion of a file the process did not write adds $+3$; each \texttt{/dev/urandom} read adds $+3$ (first access only); each \texttt{SIGKILL}/\texttt{SIGTERM} sent to another process adds $+4$; and each in-place overwrite adds $+5$. When the score crosses a configurable threshold (default 15), a critical ``Slow-burn ransomware'' alert fires. This design means that a process which reads \texttt{/dev/urandom} ($+3$), kills processes ($+4$), and encrypts two files across two directories ($+6$) already reaches a score of 13---one more file or kill away from the threshold. Duplicate writes to the same file are counted only once, low-entropy writes are ignored, and whitelisted processes never accumulate a profile.
+    
+    Additionally, a \texttt{/dev/urandom} read triggers an \emph{immediate} alert if the same process has recently performed two or more high-entropy writes to distinct user files within the sliding window---the ``generate key then encrypt'' pattern. Every \texttt{SIGKILL}/\texttt{SIGTERM} from a non-whitelisted process also triggers an immediate alert, since ransomware killing processes is a critical indicator regardless of cumulative score.
 
-Additionally, a \texttt{/dev/urandom} read triggers an \emph{immediate} alert if the same process has recently performed two or more high-entropy writes to distinct user files within the sliding window---the ``generate key then encrypt'' pattern. Every \texttt{SIGKILL}/\texttt{SIGTERM} from a non-whitelisted process also triggers an immediate alert, since ransomware killing security or backup processes is a critical indicator regardless of cumulative score.
+\end{enumerate}
 
-\paragraph{Mitigation.}
+
+\paragraph{Mitigation (\texttt{mitigator.py}).}
 The mitigation subsystem supports three configurable action modes: \texttt{simulate} (log only, for tuning), \texttt{suspend} (\texttt{SIGSTOP} to freeze the process for administrator review), and \texttt{kill} (\texttt{SIGKILL} for immediate termination). The \texttt{suspend} mode is recommended for production, as it halts damage while preserving forensic state. Additionally, on the first critical-severity alert, the agent can trigger an automated filesystem snapshot via a configurable shell command, integrating with COW filesystems such as Btrfs or ZFS for near-zero data loss.
 
 \paragraph{Post-Detection Response in Production AV/EDR Tools.}
 Modern Endpoint Detection and Response (EDR) platforms such as CrowdStrike Falcon and SentinelOne employ a graduated response chain that goes well beyond process termination~\cite{cybervigilance_s1}. Upon detecting ransomware-like behavior, these tools typically execute a sequence of containment and remediation actions:
 
 \begin{enumerate}
-    \item \textbf{Process Kill.} The malicious process tree is terminated immediately, including child processes, to halt ongoing encryption.
-    \item \textbf{Quarantine.} The offending binary is moved to a secure, sandboxed location on the endpoint where it cannot execute or interact with the filesystem. This preserves the sample for forensic analysis while neutralizing it.
-    \item \textbf{Network Isolation.} The compromised endpoint is disconnected from the local network while maintaining a management channel back to the EDR console. This prevents lateral movement and C2 communication without losing remote investigation capability.
-    \item \textbf{Remediation.} The EDR agent reverses filesystem changes made by the malicious process: encrypted files are restored, dropped payloads are deleted, and modified registry entries or scheduled tasks are reverted.
-    \item \textbf{Rollback.} Some platforms (notably SentinelOne) maintain Volume Shadow Copy (VSS) snapshots and can restore the entire endpoint to a pre-infection state, effectively undoing all ransomware damage including file encryption.
-    \item \textbf{Binary Hardening.} The executable bit can be stripped from the offending binary, or the file can be added to a persistent block list so that it cannot be re-executed even if the quarantine is bypassed.
+    \item \textit{Process Kill.} The malicious process tree is terminated immediately, including child processes, to halt ongoing encryption.
+    \item \textit{Quarantine.} The offending binary is moved to a secure, sandboxed location on the endpoint where it cannot execute or interact with the filesystem. This preserves the sample for forensic analysis while neutralizing it.
+    \item \textit{Network Isolation.} The compromised endpoint is disconnected from the local network while maintaining a management channel back to the EDR console. This prevents lateral movement and C2 communication without losing remote investigation capability. \todo{Protect from the attacker stealing the data and threaten.}
+    \item \textit{Remediation.} The EDR agent reverses filesystem changes made by the malicious process: encrypted files are restored, dropped payloads are deleted, and modified registry entries or scheduled tasks are reverted.
+    \item \textit{Rollback.} Some platforms (notably SentinelOne) maintain Volume Shadow Copy (VSS) snapshots and can restore the entire endpoint to a pre-infection state, effectively undoing all ransomware damage including file encryption.
+    \item \textit{Binary Hardening.} The executable bit can be stripped from the offending binary, or the file can be added to a persistent block list so that it cannot be re-executed even if the quarantine is bypassed.
 \end{enumerate}
 
 Our current implementation covers all six steps: process kill with child-process targeting (step~1), binary quarantine with permission stripping (step~2), network isolation via iptables owner-match rules (step~3), modified-file tracking for remediation (step~4), filesystem snapshots via configurable Btrfs/ZFS commands (step~5), and exec-bit stripping with persistent blocklist maintenance (step~6). The response mode is selectable via \texttt{--action-mode}: \texttt{simulate} logs all steps without executing them, \texttt{suspend} uses \texttt{SIGSTOP} at step~1 for human-in-the-loop review, and \texttt{kill} executes the full chain with \texttt{SIGKILL}.
@@ -293,6 +340,15 @@ An eBPF program attached at XDP monitors per-source-IP packet rates in real time
 
 \paragraph{User-Space Firewall Enforcement.}
 Mitigation operates at two levels: flagged IPs are immediately dropped in-kernel via \texttt{XDP\_DROP}, while a Python user-space controller monitors the trace pipe and installs persistent iptables blocking rules, additionally handling logging and alerting.
+
+We implement a time-to-live (TTL) based mechanism that supports automatic expiration and renewal of bans. We maintain an in-memory dictionary, BLOCKED\_IPS, which maps each offending source IP address to a monotonic expiration timestamp (expires\_at).
+
+When the XDP kernel program signals that an IP has exceeded a predefined packets-per-second threshold, the userspace handler checks whether the IP is already present in BLOCKED\_IPS. If the IP is already tracked, its expiration timestamp is extended by a fixed interval (--block-ttl), effectively refreshing the block without modifying existing firewall rules. If the IP is not yet tracked, a new drop rule is installed via persist\_block\_ip, and the corresponding expiration timestamp is recorded in the dictionary.
+
+To ensure timely removal of expired blocks, we implement a lightweight periodic sweeper (cleanup\_expired\_blocks) that executes approximately every five seconds within the perf-buffer polling loop. This routine iterates over BLOCKED\_IPS, and for any entry whose expiration time has elapsed, it removes the entry and invokes persist\_unblock\_ip to delete the associated firewall rule.
+
+As a result, the firewall’s blocklist dynamically reflects only currently active bans. IPs that continue to trigger the detection mechanism have their blocks persistently extended, while benign or inactive IPs are automatically unblocked after their TTL expires, eliminating the need for manual intervention.
+
 
 \paragraph{Experimental Setup.}
 We deploy the system on a Raspberry Pi (victim), with a laptop generating UDP flood traffic via iperf3 at up to 100\,Mbps (attacker) and a second laptop as a benign user. We evaluate mitigation rate, CPU utilization, and system stability under attack.
@@ -395,7 +451,7 @@ The current XDP-based filter operates on per-source-IP packet rates, which can b
     \item David and Danny pair programmed testing the code in a VM and testing with Docker containers for the victim, attacker, and a benign agent. 
     \item David deployed the victim on a Raspberry Pi and the attacker on another laptop and ran experiments and collected results.
 \end{itemize}  
-\paragraph{\textbf{Future Responsibilities:}} David and Danny plan on jointly setting up a more complex testing environment where there is an additional benign computer and setting up more complex attacks to simulate together. Then will work on evaluating these various components and experimental setups.
+% \paragraph{\textbf{Future Responsibilities:}} David and Danny plan on jointly setting up a more complex testing environment where there is an additional benign computer and setting up more complex attacks to simulate together. Then will work on evaluating these various components and experimental setups.
 
 \clearpage
 \bibliography{references}

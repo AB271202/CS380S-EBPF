@@ -1,18 +1,20 @@
-"""EDR Response Chain — 6-step mitigation for detected ransomware.
+"""EDR Response Chain — 5-step mitigation for detected ransomware.
 
 Steps mirror production AV/EDR tools (CrowdStrike, SentinelOne):
-  1. Process Kill   — terminate the process tree
-  2. Quarantine     — copy binary to secure location, strip permissions
+  1. Process Kill    — terminate the process tree
+  2. Quarantine      — move binary to secure location, strip permissions
   3. Network Isolate — block outbound traffic via iptables
-  4. Remediate      — log modified files for recovery
-  5. Rollback       — trigger a filesystem snapshot (Btrfs/ZFS)
-  6. Harden Binary  — strip exec bit, add to persistent blocklist
+  4. Remediate       — log modified files for recovery
+  5. Rollback        — trigger a filesystem snapshot (Btrfs/ZFS)
+
+Step 2 uses move (not copy) because step 1 has already killed the
+process, so the binary is no longer mapped.  Moving removes the
+original from disk, eliminating the need for a separate hardening step.
 """
 
 import os
 import shutil
 import signal as signal_mod
-import stat
 import subprocess
 import time
 
@@ -53,19 +55,7 @@ class Mitigator:
 
     def take_action(self, pid, comm, reason, severity="unknown",
                     resolve_exe_fn=None, modified_files=None):
-        """Run the full response chain for a flagged process.
-
-        Parameters
-        ----------
-        pid, comm, reason : int, str, str
-            Identity and reason for the alert.
-        severity : str
-            Alert severity (``"critical"`` triggers rollback).
-        resolve_exe_fn : callable or None
-            ``fn(pid) -> str|None`` that resolves the on-disk binary path.
-        modified_files : list[str] or None
-            Files the process has modified (for remediation logging).
-        """
+        """Run the full response chain for a flagged process."""
         print(
             f"[X] ACTION ({self.action_mode}): {comm} (PID {pid}) — "
             f"{reason} [severity={severity}]"
@@ -75,12 +65,12 @@ class Mitigator:
             print(f"      [simulate] Would execute full EDR chain for PID {pid}")
             return
 
-        # Step 1: Process Kill / Suspend
+        # Step 1: Kill the process (binary is no longer mapped after this)
         self._step_kill_process(pid, comm)
 
-        # Step 2: Quarantine the binary
+        # Step 2: Move the binary to quarantine (safe because step 1 killed it)
         exe_path = resolve_exe_fn(pid) if resolve_exe_fn else None
-        quarantined_path = self._step_quarantine(pid, comm, exe_path)
+        self._step_quarantine(pid, comm, exe_path)
 
         # Step 3: Network Isolation
         self._step_network_isolate(pid, comm)
@@ -91,9 +81,6 @@ class Mitigator:
         # Step 5: Rollback (critical only)
         if severity == "critical":
             self._step_rollback(pid, comm)
-
-        # Step 6: Binary Hardening
-        self._step_harden_binary(pid, comm, exe_path, quarantined_path)
 
     # ------------------------------------------------------------------
     # Step 1: Process Kill
@@ -129,7 +116,7 @@ class Mitigator:
             return []
 
     # ------------------------------------------------------------------
-    # Step 2: Quarantine
+    # Step 2: Quarantine (move, not copy — process is already dead)
     # ------------------------------------------------------------------
 
     def _step_quarantine(self, pid, comm, exe_path):
@@ -142,9 +129,10 @@ class Mitigator:
                 self.quarantine_dir,
                 f"{comm}_{pid}_{int(time.time())}_{os.path.basename(exe_path)}",
             )
-            shutil.copy2(exe_path, dest)
+            shutil.move(exe_path, dest)
             os.chmod(dest, 0o000)
-            print(f"      [step2] Quarantined {exe_path} → {dest}")
+            self.blocklist.add(exe_path)
+            print(f"      [step2] Quarantined {exe_path} → {dest} (original removed)")
             return dest
         except (OSError, shutil.Error) as exc:
             print(f"      [step2] Quarantine failed for {exe_path}: {exc}")
@@ -228,19 +216,3 @@ class Mitigator:
             print(f"      [step5] Snapshot command timed out")
         except Exception as exc:
             print(f"      [step5] Snapshot failed: {exc}")
-
-    # ------------------------------------------------------------------
-    # Step 6: Binary Hardening
-    # ------------------------------------------------------------------
-
-    def _step_harden_binary(self, pid, comm, exe_path, quarantined_path):
-        if exe_path and os.path.isfile(exe_path):
-            try:
-                current = os.stat(exe_path).st_mode
-                os.chmod(exe_path, current & ~(stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
-                print(f"      [step6] Stripped exec bit from {exe_path}")
-            except OSError as exc:
-                print(f"      [step6] Cannot strip exec bit from {exe_path}: {exc}")
-        if exe_path:
-            self.blocklist.add(exe_path)
-            print(f"      [step6] Added {exe_path} to blocklist ({len(self.blocklist)} entries)")
