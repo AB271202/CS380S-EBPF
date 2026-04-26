@@ -1,4 +1,0 @@
-# BCC (BPF Compiler Collection) - Python bindings for eBPF.
-# Note: BCC also requires system-level libraries (e.g., bpfcc-tools, python3-bpfcc).
-# These are typically installed via system package managers (apt, dnf, etc.)
-bcc

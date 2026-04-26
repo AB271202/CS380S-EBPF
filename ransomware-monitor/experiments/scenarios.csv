@@ -1,8 +1,0 @@
-id,label,expected_comm,command,notes
-pos_touch_locked,positive,touch,touch test_file.locked,Create suspicious extension
-pos_rename_locked,positive,mv,printf 'hello' > doc.txt && mv doc.txt doc.locked,Suspicious rename event
-pos_dd_urandom,positive,dd,dd if=/dev/urandom of=random.bin bs=1024 count=20 status=none,High-entropy write burst
-neg_touch_txt,negative,touch,touch normal.txt,Benign file create
-neg_dd_zero,negative,dd,dd if=/dev/zero of=zero.bin bs=1024 count=20 status=none,Low-entropy writes
-neg_plaintext_appends,negative,bash,for i in $(seq 1 50); do echo line-$i >> notes.txt; done,Frequent but low-entropy appends
-neg_archive_workload,negative,tar,mkdir data && for i in $(seq 1 20); do echo data-$i > data/f$i.txt; done && tar -cf data.tar data,Benign archive workload

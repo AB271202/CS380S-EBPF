@@ -1,9 +1,0 @@
-id,label,source,variant,family,expected_comm,command,notes
-neg_7z_compress,negative,phoronix,compress,7z,"7z,dd",dd if=/dev/urandom of=sample.bin bs=1M count=50 status=none && 7z a -mx9 archive.7z sample.bin > /dev/null,Benign 7z compression (counts alerts from the archive step or the dd input-generation helper)
-neg_zstd_compress,negative,phoronix,compress,zstd,"zstd,dd",dd if=/dev/urandom of=sample.bin bs=1M count=50 status=none && zstd -19 -o archive.zst sample.bin,Benign zstd compression (counts alerts from the archive step or the dd input-generation helper)
-neg_gzip_compress,negative,phoronix,compress,gzip,"gzip,dd",dd if=/dev/urandom of=sample.bin bs=1M count=50 status=none && gzip -9 -k sample.bin,Benign gzip compression (counts alerts from the archive step or the dd input-generation helper)
-neg_gpg_encrypt_benign,negative,phoronix,encrypt-benign,gpg,gpg,head -c 100K /dev/urandom > backup.bin && gpg --batch --yes --pinentry-mode loopback --passphrase backup123 --symmetric --cipher-algo AES256 backup.bin,Legitimate single-file GPG encryption
-neg_openssl_encrypt_benign,negative,phoronix,encrypt-benign,openssl,openssl,head -c 100K /dev/urandom > data.bin && openssl enc -aes-256-cbc -salt -in data.bin -out data.enc -pass pass:test123 -pbkdf2,Legitimate single-file OpenSSL encryption
-neg_ccencrypt_encrypt_benign,negative,phoronix,encrypt-benign,ccrypt,ccencrypt,head -c 100K /dev/urandom > notes.bin && ccencrypt -f -K benign123 notes.bin,Legitimate single-file ccrypt encryption
-neg_ffmpeg_transcode,negative,phoronix,media,ffmpeg,ffmpeg,ffmpeg -y -f lavfi -i testsrc=duration=10:size=1280x720:rate=30 -c:v libx264 -preset ultrafast out.mp4 2>/dev/null,Video encoding (pts/x264 analog)
-neg_gcc_compile_burst,negative,phoronix,compile,gcc,gcc,for i in $(seq 1 30); do echo "int f${i}(int x){return x*${i}+__LINE__;}" > src_${i}.c && gcc -O2 -c src_${i}.c -o src_${i}.o; done,Burst compilation of 30 C files (pts/compilebench analog)
