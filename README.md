@@ -14,8 +14,8 @@ looks for patterns that are consistent with ransomware impact:
 - `/dev/urandom` plus high-entropy writes
 - delegated helper workflows, where a parent orchestrates child writers
 
-The current detector is tuned to behave like a ransomware monitor rather than a
-generic “destructive activity” monitor:
+The detector is tuned to behave like a ransomware monitor rather than a generic
+“destructive activity” monitor:
 
 - directory traversal now arms suspicion instead of firing directly
 - generic launchers such as `bash` and `python3` no longer inherit child-write
@@ -57,8 +57,7 @@ The detector has two main layers.
 ### 1. Trust Layer
 
 Some benign tools are trusted by default because their normal workloads still
-overlap with ransomware-like file behavior. The final built-in whitelist is
-intentionally much narrower than the original exploratory version and focuses
+overlap with ransomware-like file behavior. The built-in whitelist focuses
 on:
 
 - package managers and dependency installers
@@ -118,16 +117,6 @@ Start with:
 - [experiments/README.md](experiments/README.md)
 - [experiments/EXPERIMENTS.md](experiments/EXPERIMENTS.md)
 
-One important conclusion from the final validated branch is that the outer
-confusion matrix stayed clean while the detector’s internal behavior became much
-more coherent:
-
-- benign suite stayed at `FP=0`
-- behavioral suite stayed at `TP=24/24`
-- benign internal launcher noise from `bash` and `python3` was removed
-- standalone `Directory traversal + Writes` alerts were eliminated
-- slow-burn benign noise without entropy anchors was eliminated
-
 ## Tests
 
 Run the full test suite with:
@@ -155,6 +144,5 @@ The main coverage areas are:
 
 - The monitor targets Linux and requires kernel support for the eBPF hooks it uses.
 - Root is required for ordinary runs because the BPF program must compile and attach.
-- The repository includes exploratory and experiment-specific materials; the main
-  public-facing detector behavior is best understood through the detector, the
-  experiment docs, and the final whitelist note.
+- The detector behavior is best understood through the source code, the
+  experiment docs, and the whitelist note.

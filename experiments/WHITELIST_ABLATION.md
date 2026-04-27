@@ -1,6 +1,6 @@
 # Minimal Whitelist Ablation
 
-This note records the final whitelist-mining result used in the experiment context.
+This note records the measured minimal-whitelist result used in the experiment context.
 
 ## Goal
 
@@ -31,8 +31,6 @@ With that five-entry policy, the tuned 3-repeat full run produced:
 - T1486: `TP=0`, `FP=0`, `TN=0`, `FN=12`
 - Benign: `TP=0`, `FP=0`, `TN=24`, `FN=0`
 - Behavioral: `TP=24`, `FP=0`, `TN=0`, `FN=0`
-
-This dominated the earlier zero-false-positive operating point by recovering the legacy `dd` case without reopening the benign suite or harming the behavioral suite.
 
 ## Ablation
 

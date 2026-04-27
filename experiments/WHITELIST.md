@@ -1,13 +1,13 @@
 # Whitelist
 
-This document records the final built-in whitelist for the detector in
+This document records the built-in whitelist for the detector in
 [detector.py](../agent/detector.py).
 
-It is intentionally broader than the five-entry test-context whitelist from
+This default whitelist is intended for ordinary use of the detector. A separate
+experiment-context minimal policy is documented in
 [WHITELIST_ABLATION.md](WHITELIST_ABLATION.md).
-That five-entry set was the minimal trust policy needed to preserve the measured
-experiment outcome. The default whitelist below is the broader-use policy after
-reasoning through the detector's final validated behavior:
+
+The whitelist below is aligned with the detector's behavior:
 
 - traversal now arms suspicion instead of alerting directly,
 - generic launchers such as `bash` and `python3` no longer inherit child writes loosely,
@@ -18,9 +18,7 @@ overlap with the detector's surviving ransomware-oriented heuristics.
 
 ## Summary
 
-- Final default whitelist size: `32`
-- Derived from the original `78` built-in entries, plus one deliberate addition:
-  `openssl`
+- Default whitelist size: `32`
 
 ## Version control
 
@@ -81,8 +79,7 @@ overlap with the detector's surviving ransomware-oriented heuristics.
 
 ## Final note
 
-This whitelist is intentionally narrower than the original `78`-entry default.
-It no longer treats generic editors, compiler stages, schedulers, media encoders,
-or simple one-output tools as blanket-trusted. The remaining entries are here
-because they still pose a realistic false-positive threat under the detector's
-final validated ransomware-oriented behavior.
+This whitelist does not treat generic editors, compiler stages, schedulers,
+media encoders, or simple one-output tools as blanket-trusted. The remaining
+entries are here because they still pose a realistic false-positive threat
+under the detector's ransomware-oriented behavior.

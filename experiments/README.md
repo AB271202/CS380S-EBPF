@@ -2,12 +2,12 @@
 
 This folder contains the scripts used to run the ransomware detector against:
 
-- the original legacy control suite
+- the legacy control suite
 - the official Atomic Red Team `T1486` Linux tests
 - a benign stress suite derived from Phoronix-style workloads
 - a behavioral ransomware simulation suite derived from threat intelligence
 
-The current detector also supports selective process-tree attribution. The BPF
+The detector also supports selective process-tree attribution. The BPF
 event path captures each event's parent PID in-kernel, and the detector can
 attribute child-write evidence back to an eligible non-whitelisted
 orchestrator whose recent context actually overlaps the child's target paths.
@@ -145,7 +145,7 @@ make exp-metrics-tuned-behavioral
 ```
 
 If detector logic changes, rerun the suites and regenerate metrics rather than
-relying on older README numbers.
+relying on stale results.
 
 ## One-Command Tuned Evaluation
 
@@ -230,7 +230,7 @@ Things to keep in mind on this setup:
 - some workloads can fail or time out, and `metrics.py` will list them under `Workload Failures`
 - helper-heavy benign workloads may legitimately produce alerts even when they
   are labeled negative; that is the point of the false-positive stress suite
-- output directories are created under `experiments/out/`, and the harness restores ownership back to the original sudo user when possible
+- output directories are created under `experiments/out/`, and the harness restores ownership back to the invoking sudo user when possible
 - using a quiet VM or WSL instance helps reduce background filesystem noise
 
 ## Main Files
