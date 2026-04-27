@@ -87,7 +87,19 @@ The delegated-encryption case now shows what parent-child correlation buys the d
 
 The remaining boundary is narrower but still real. Attribution only activates when the ancestor already has an active behavioral profile, and the walk is intentionally shallow. A pure launcher that does nothing but spawn helper children and never emits its own traversal, open, write, or unlink context could still evade this mechanism. The other deliberate boundary is policy-level: once common encryption and archival tools are trusted, one-file ATT&CK-style tool invocations are expected misses. Those are much smaller blind spots than the original per-PID model, but they are still the next architectural boundaries if workflow-level attacks become a design priority.
 
-## 5. Remaining Boundaries
+## 5. Minimal Whitelist Ablation
+
+We also ran a final whitelist-mining experiment to see whether the trust policy could be reduced to a small, explainable set without changing the overall experimental story. The first pass was a cheap benign-only shortlist ablation. That pass was enough to show that `gpg`, `gzip`, and `zstd` were definitely necessary, but it was not strong enough to certify a final minimal set because it used only one repeat and only the benign suite. A later all-suite run showed that `ccencrypt` and `openssl` also mattered for direct benign encryption workloads.
+
+The final reduced policy was therefore tested as a config-level whitelist rather than a detector default. That experimental baseline kept exactly five entries: `gpg`, `gzip`, `zstd`, `ccencrypt`, and `openssl`. It also enabled the broader process-tree attribution mode so delegated child writes would still roll up to a suspicious parent even when the child itself was no longer trusted by default.
+
+The five-entry baseline produced `TP=30`, `FP=0`, `TN=36`, `FN=15`, with suite-level results `legacy=6/0/12/3`, `t1486=0/0/0/12`, `benign=0/0/24/0`, and `behavioral=24/0/0/0`. In other words, it strictly improved on the earlier zero-false-positive operating point by recovering the legacy `dd` case without reopening the benign suite or harming the behavioral suite.
+
+We then ran a full ablation over that five-entry policy: baseline, then baseline-minus-one for each of the five entries, all across all four suites with three repeats. The result was unusually clean. Every removal caused exactly one benign workload family to flip from `TN=3/3` to `FP=3/3`, and nothing else changed. Removing `gpg` only broke `neg_gpg_encrypt_benign`; removing `gzip` only broke `neg_gzip_compress`; removing `zstd` only broke `neg_zstd_compress`; removing `ccencrypt` only broke `neg_ccencrypt_encrypt_benign`; and removing `openssl` only broke `neg_openssl_encrypt_benign`. No legacy, Atomic, or behavioral counts changed under any of those five removals.
+
+That makes the five-entry set both small and experimentally justified. It is not a claim that those are the only tools a real deployment would ever need to trust. It is a narrower statement: in this project's measured test context, those five entries were the minimal trust policy that preserved the final operating point.
+
+## 6. Remaining Boundaries
 
 The earlier constructor-wiring and open-event visibility gaps are closed in this branch. What remains are design boundaries rather than missing plumbing:
 

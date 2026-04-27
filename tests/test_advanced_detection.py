@@ -289,6 +289,100 @@ class TestProcessTreeAttribution(unittest.TestCase):
         self.assertGreater(len(parent_alerts), 0)
         self.assertTrue(any(a.get("attribution_mode") == "process_tree" for a in parent_alerts))
 
+    def test_non_whitelisted_child_writes_are_not_attributed_by_default(self):
+        """Without the experimental flag, non-whitelisted helpers stay per-PID."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+        )
+        buf = os.urandom(128)
+        parent_pid = 25000
+        child_pid = 25001
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        for directory in dirs:
+            det.analyze_event(
+                make_event(4, parent_pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+            )
+
+        with mock.patch.object(det, "_read_proc_comm", return_value="ransim_dlg"):
+            for i, directory in enumerate(dirs):
+                det.analyze_event(
+                    make_event(
+                        1,
+                        child_pid,
+                        b"customcrypt\x00",
+                        f"{directory}/file_{i}.enc",
+                        128,
+                        buf,
+                        ppid=parent_pid,
+                    )
+                )
+
+        parent_alerts = [a for a in det.alerts if a["pid"] == parent_pid]
+        child_alerts = [a for a in det.alerts if a["pid"] == child_pid]
+        self.assertEqual(parent_alerts, [])
+        self.assertGreater(len(child_alerts), 0)
+        self.assertFalse(any(a.get("attributed") for a in child_alerts))
+
+    def test_non_whitelisted_child_writes_are_attributed_when_enabled(self):
+        """Experimental mode should alert on both the helper and orchestrator."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+            attribute_all_child_writes=True,
+        )
+        buf = os.urandom(128)
+        parent_pid = 25100
+        child_pid = 25101
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        for directory in dirs:
+            det.analyze_event(
+                make_event(4, parent_pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+            )
+
+        with mock.patch.object(det, "_read_proc_comm", return_value="ransim_dlg"):
+            for i, directory in enumerate(dirs):
+                det.analyze_event(
+                    make_event(
+                        1,
+                        child_pid,
+                        b"customcrypt\x00",
+                        f"{directory}/file_{i}.enc",
+                        128,
+                        buf,
+                        ppid=parent_pid,
+                    )
+                )
+
+        parent_alerts = [a for a in det.alerts if a["pid"] == parent_pid]
+        child_alerts = [a for a in det.alerts if a["pid"] == child_pid]
+        self.assertGreater(len(parent_alerts), 0)
+        self.assertGreater(len(child_alerts), 0)
+        self.assertTrue(any(a.get("attributed") for a in parent_alerts))
+        self.assertTrue(
+            any(a.get("attributed_from_comm") == "customcrypt" for a in parent_alerts)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Slow-Burn / Cumulative Profile Tests

@@ -113,6 +113,7 @@ class RansomwareDetector:
         quarantine_dir=None,
         enable_network_isolation=False,
         cumulative_score_threshold=None,
+        attribute_all_child_writes=None,
     ):
         # Tune defaults for 128-byte write samples from eBPF.
         self.threshold_entropy = float(
@@ -148,6 +149,15 @@ class RansomwareDetector:
         self.alert_json = os.getenv("ALERT_JSON", "0") == "1"
         self.alert_json_prefix = os.getenv("ALERT_JSON_PREFIX", "ALERT_JSON")
         self.run_id = os.getenv("RUN_ID", "")
+        attr_all_default = (
+            attribute_all_child_writes
+            if attribute_all_child_writes is not None
+            else False
+        )
+        self.attribute_all_child_writes = os.getenv(
+            "ATTRIBUTE_ALL_CHILD_WRITES",
+            "1" if attr_all_default else "0",
+        ) == "1"
 
         # --- Behavioral analysis thresholds ---
         self.threshold_unique_files = int(
@@ -267,7 +277,9 @@ class RansomwareDetector:
         Expected format::
 
             {
+                "attribute_all_child_writes": true,
                 "whitelisted_processes": ["mybackup", "custom-tool"],
+                "remove_whitelisted_processes": ["gzip"],
                 "trusted_hashes": {"/usr/bin/mybackup": ["sha256_digest"]},
                 "trusted_parents": ["orchestrator"]
             }
@@ -279,8 +291,15 @@ class RansomwareDetector:
             print(f"[WARN] Could not load config {config_path}: {exc}")
             return
 
+        if "attribute_all_child_writes" in cfg:
+            self.attribute_all_child_writes = bool(
+                cfg.get("attribute_all_child_writes")
+            )
         self.whitelisted_processes.update(cfg.get("whitelisted_processes", []))
         self.trusted_parents.update(cfg.get("trusted_parents", []))
+        self.whitelisted_processes.difference_update(
+            cfg.get("remove_whitelisted_processes", [])
+        )
 
         for exe_path, hashes in cfg.get("trusted_hashes", {}).items():
             if isinstance(hashes, str):
@@ -550,7 +569,7 @@ class RansomwareDetector:
         return None
 
     def _find_attributable_subject(self, pid, now=None, direct_parent_pid=None):
-        """Find the best process identity to receive a trusted child's write.
+        """Find the best process identity to receive a delegated child's write.
 
         Preference order:
         1. Parent orchestrator, when a freshly-forked helper PID recently
@@ -1094,7 +1113,7 @@ class RansomwareDetector:
         return None
 
     def _attribute_child_write(self, event, pid, comm, filename, now):
-        """Propagate a trusted child's write signal to an attributable ancestor."""
+        """Propagate a delegated child's write signal to an attributable ancestor."""
         if not self.is_user_file(filename):
             return False
 
@@ -1122,6 +1141,10 @@ class RansomwareDetector:
             attribution_mode=attribution_mode,
         )
         return True
+
+    def _should_attribute_child_write(self, comm):
+        """Return True when a child's WRITE should also roll up to a parent."""
+        return self.attribute_all_child_writes or comm in self.whitelisted_processes
 
     def _should_suppress_whitelisted_helper(self, pid, now=None, direct_parent_pid=None):
         """Return True when a trusted helper is acting under an attributable parent.
@@ -1152,16 +1175,19 @@ class RansomwareDetector:
         self._remember_behavioral_identity(pid, comm, now)
         is_canary_access = self.is_canary(filename)
 
-        # Name-whitelisted helper tools stay quiet themselves, but their
-        # WRITE signals can be inherited by a non-whitelisted ancestor that
-        # is actively traversing or modifying the filesystem.
+        # Delegated helper WRITE signals can be inherited by a
+        # non-whitelisted ancestor that is actively traversing or
+        # modifying the filesystem.  In the default policy this applies
+        # only to trusted helpers; experimental runs can broaden it to
+        # all helper children.
         if (
             event.type == 1
-            and comm in self.whitelisted_processes
+            and self._should_attribute_child_write(comm)
             and not is_canary_access
         ):
             if self._attribute_child_write(event, pid, comm, filename, now):
-                return
+                if comm in self.whitelisted_processes:
+                    return
 
         if (
             comm in self.whitelisted_processes

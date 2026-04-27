@@ -81,16 +81,40 @@ class TestProcessWhitelist(unittest.TestCase):
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as fh:
-            json.dump({"whitelisted_processes": ["my-backup-tool", "custom-sync"]}, fh)
+            json.dump(
+                {
+                    "attribute_all_child_writes": True,
+                    "whitelisted_processes": ["my-backup-tool", "custom-sync"],
+                },
+                fh,
+            )
             cfg_path = fh.name
         try:
             det = RansomwareDetector(
                 whitelist_config=cfg_path,
                 verify_binary_hash=False, verify_lineage=False,
             )
+            self.assertTrue(det.attribute_all_child_writes)
             self.assertTrue(det.is_whitelisted("my-backup-tool"))
             self.assertTrue(det.is_whitelisted("custom-sync"))
             # Built-in defaults are still present.
+            self.assertTrue(det.is_whitelisted("git"))
+        finally:
+            os.unlink(cfg_path)
+
+    def test_remove_whitelist_entries_from_config_file(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as fh:
+            json.dump({"remove_whitelisted_processes": ["gpg", "gcc"]}, fh)
+            cfg_path = fh.name
+        try:
+            det = RansomwareDetector(
+                whitelist_config=cfg_path,
+                verify_binary_hash=False, verify_lineage=False,
+            )
+            self.assertFalse(det.is_whitelisted("gpg"))
+            self.assertFalse(det.is_whitelisted("gcc"))
             self.assertTrue(det.is_whitelisted("git"))
         finally:
             os.unlink(cfg_path)
