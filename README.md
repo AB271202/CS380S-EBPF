@@ -89,7 +89,7 @@ heuristics such as:
 - write-then-delete correlation
 - high unlink frequency
 - entropy-anchored slow-burn profiling
-- process-tree attribution of child writes to an eligible parent
+- process-tree attribution of child writes to an eligible parent, regardless of child trust state
 
 ## Response Model
 

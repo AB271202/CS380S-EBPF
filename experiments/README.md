@@ -7,7 +7,7 @@ This folder contains the scripts used to run the ransomware detector against:
 - a benign stress suite derived from Phoronix-style workloads
 - a behavioral ransomware simulation suite derived from threat intelligence
 
-The detector also supports selective process-tree attribution. The BPF
+The detector supports selective process-tree attribution. The BPF
 event path captures each event's parent PID in-kernel, and the detector can
 attribute child-write evidence back to an eligible non-whitelisted
 orchestrator whose recent context actually overlaps the child's target paths.

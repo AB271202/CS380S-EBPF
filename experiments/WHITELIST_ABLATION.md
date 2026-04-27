@@ -20,7 +20,7 @@ The final reduced whitelist was tested through a config-level trust policy, not 
 - `ccencrypt`
 - `openssl`
 
-The same baseline also enabled broader process-tree attribution so delegated child writes could still be attributed to a suspicious parent even when the child itself was no longer trusted by default.
+The same baseline used the detector's process-tree attribution policy, allowing delegated child writes to be attributed to an eligible suspicious parent.
 
 ## Baseline Result
 

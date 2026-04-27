@@ -166,7 +166,7 @@ class RansomwareDetector:
         attr_all_default = (
             attribute_all_child_writes
             if attribute_all_child_writes is not None
-            else False
+            else True
         )
         self.attribute_all_child_writes = os.getenv(
             "ATTRIBUTE_ALL_CHILD_WRITES",
@@ -1571,9 +1571,9 @@ class RansomwareDetector:
 
         # Delegated helper WRITE signals can be inherited by a
         # non-whitelisted ancestor that is actively traversing or
-        # modifying the filesystem.  In the default policy this applies
-        # only to trusted helpers; experimental runs can broaden it to
-        # all helper children.
+        # modifying the filesystem. The default policy allows this for
+        # all helper children, subject to the parent-eligibility and
+        # path-overlap constraints enforced below.
         if (
             event.type == 1
             and self._should_attribute_child_write(comm)
