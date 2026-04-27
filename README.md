@@ -5,22 +5,7 @@ event capture and Python for user-space detection and response logic.
 
 The monitor is intentionally behavioral rather than signature-based. It watches
 filesystem activity, builds short-lived and cumulative process context, and
-looks for patterns that are consistent with ransomware impact:
-
-- suspicious extension and rename behavior
-- high-entropy multi-file writes
-- in-place overwrite of existing files
-- write-then-delete cleanup patterns
-- `/dev/urandom` plus high-entropy writes
-- delegated helper workflows, where a parent orchestrates child writers
-
-The detector is tuned to behave like a ransomware monitor rather than a generic
-“destructive activity” monitor:
-
-- directory traversal now arms suspicion instead of firing directly
-- generic launchers such as `bash` and `python3` no longer inherit child-write
-  alerts too loosely
-- slow-burn cumulative alerts now require entropy-backed ransomware anchors
+looks for patterns that are consistent with ransomware impact
 
 ## Repository Layout
 
@@ -69,11 +54,6 @@ on:
 The exact default list and rationale are documented in
 [experiments/WHITELIST.md](experiments/WHITELIST.md).
 
-The trust layer can also be hardened with:
-
-- binary hash verification
-- process lineage validation
-- custom whitelist JSON policy
 
 ### 2. Behavioral Layer
 
@@ -94,8 +74,7 @@ heuristics such as:
 ## Response Model
 
 The detector supports both simulated and real response modes. In the default
-safe mode used for experiments, it logs what it would do. The response chain
-can include:
+safe mode used for experiments, it logs what it would do. The response chain includes:
 
 - killing or suspending a process tree
 - quarantining binaries
@@ -125,12 +104,6 @@ Run the full test suite with:
 make unit-test
 ```
 
-or:
-
-```bash
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-```
-
 The main coverage areas are:
 
 - basic suspicious-extension, entropy, and unlink heuristics
@@ -144,5 +117,5 @@ The main coverage areas are:
 
 - The monitor targets Linux and requires kernel support for the eBPF hooks it uses.
 - Root is required for ordinary runs because the BPF program must compile and attach.
-- The detector behavior is best understood through the source code, the
+- The detector behavior is best understood through the source code, the report, the
   experiment docs, and the whitelist note.
