@@ -1,10 +1,10 @@
 # Whitelist
 
 This document records the final built-in whitelist for the detector in
-[detector.py](/home/vaagish/src/CS380S-EBPF/agent/detector.py).
+[detector.py](../agent/detector.py).
 
 It is intentionally broader than the five-entry test-context whitelist from
-[WHITELIST_ABLATION.md](/home/vaagish/src/CS380S-EBPF/experiments/WHITELIST_ABLATION.md).
+[WHITELIST_ABLATION.md](WHITELIST_ABLATION.md).
 That five-entry set was the minimal trust policy needed to preserve the measured
 experiment outcome. The default whitelist below is the broader-use policy after
 reasoning through the detector's final validated behavior:

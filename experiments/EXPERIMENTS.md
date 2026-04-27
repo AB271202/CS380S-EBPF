@@ -97,7 +97,7 @@ The five-entry baseline produced `TP=30`, `FP=0`, `TN=36`, `FN=15`, with suite-l
 
 We then ran a full ablation over that five-entry policy: baseline, then baseline-minus-one for each of the five entries, all across all four suites with three repeats. The result was unusually clean. Every removal caused exactly one benign workload family to flip from `TN=3/3` to `FP=3/3`, and nothing else changed. Removing `gpg` only broke `neg_gpg_encrypt_benign`; removing `gzip` only broke `neg_gzip_compress`; removing `zstd` only broke `neg_zstd_compress`; removing `ccencrypt` only broke `neg_ccencrypt_encrypt_benign`; and removing `openssl` only broke `neg_openssl_encrypt_benign`. No legacy, Atomic, or behavioral counts changed under any of those five removals.
 
-That makes the five-entry set both small and experimentally justified. It is not a claim that those are the only tools a real deployment would ever need to trust. It is a narrower statement: in this project's measured test context, those five entries were the minimal trust policy that preserved that intermediate operating point. The checked-in default whitelist is intentionally broader and is documented separately in [WHITELIST.md](/home/vaagish/src/CS380S-EBPF/experiments/WHITELIST.md).
+That makes the five-entry set both small and experimentally justified. It is not a claim that those are the only tools a real deployment would ever need to trust. It is a narrower statement: in this project's measured test context, those five entries were the minimal trust policy that preserved that intermediate operating point. The checked-in default whitelist is intentionally broader and is documented separately in [WHITELIST.md](WHITELIST.md).
 
 ## 6. Remaining Boundaries
 
