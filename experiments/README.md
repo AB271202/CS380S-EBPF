@@ -7,10 +7,10 @@ This folder contains the scripts used to run the ransomware detector against:
 - a benign stress suite derived from Phoronix-style workloads
 - a behavioral ransomware simulation suite derived from threat intelligence
 
-The current detector also supports process-tree attribution for trusted helper
-children. The BPF event path captures each event's parent PID in-kernel, and
-the detector can attribute a whitelisted child's write signal back to a
-non-whitelisted orchestrator that already has active behavioral context.
+The current detector also supports selective process-tree attribution. The BPF
+event path captures each event's parent PID in-kernel, and the detector can
+attribute child-write evidence back to an eligible non-whitelisted
+orchestrator whose recent context actually overlaps the child's target paths.
 
 The harness records per-run results, logs, and confusion-matrix metrics.
 
@@ -19,7 +19,7 @@ The harness records per-run results, logs, and confusion-matrix metrics.
 From the repo root:
 
 ```bash
-cd /home/vaagish/src/CS380S-EBPF/ransomware-monitor
+cd /path/to/CS380S-EBPF
 ```
 
 Install the normal project dependencies:
@@ -101,8 +101,8 @@ make exp-metrics-behavioral
 
 Defaults in the detector code were not changed.
 
-The tuned settings that were most useful on this WSL setup for the official
-`T1486` suite were:
+The tuned settings that were most useful on the final evaluation setup for the
+official `T1486` suite were:
 
 ```bash
 THRESHOLD_ENTROPY=5.8

@@ -28,35 +28,31 @@ MAGIC_BYTES = {
 
 # Default set of process names considered safe.  The whitelist is loaded
 # from a JSON config file when one is provided; these are the built-in
-# defaults that cover common developer and system tools.
+# defaults that cover the benign tools most likely to overlap with the
+# detector's direct ransomware-oriented heuristics.
 DEFAULT_WHITELISTED_PROCESSES = {
     # Version control
-    "git", "git-remote-htt", "git-remote-ssh",
-    # Package managers
+    "git",
+    # Package managers and dependency installers
     "apt", "apt-get", "dpkg", "dnf", "yum", "pacman", "snap", "flatpak",
-    "pip", "pip3", "npm", "yarn", "cargo",
-    # Compilers / build tools
-    "gcc", "g++", "cc1", "cc1plus", "as", "ld", "make", "cmake", "ninja",
-    "rustc", "javac", "clang", "clang++",
-    # Backup / sync
-    "rsync", "rclone", "tar", "gzip", "bzip2", "xz", "zstd", "ccencrypt", "gpg",
-    # System services
-    "systemd", "journald", "systemd-journa", "logrotate", "cron", "anacron",
-    "sshd", "dbus-daemon",
-    # Editors / IDEs (they do lots of temp-file writes)
-    "vim", "nvim", "nano", "code", "codium", "emacs",
-    # Databases
-    "postgres", "mysqld", "mongod", "redis-server",
-    # Core utilities that are never ransomware attack vectors
-    "dd", "head", "cat", "cp", "sort", "shuf",
-    # Media processing (high-entropy output but not attack tools)
-    "ffmpeg", "ffprobe", "avconv",
-    "convert", "mogrify",  # ImageMagick
-    "sox",                  # Audio processing
-    "x264", "x265", "vpxenc",
-    "handbrake", "HandBrakeCLI",
-    # Parallel compression variants (never used as attack tools)
-    "pigz", "pbzip2", "pixz", "lz4", "lzop",
+    "pip", "pip3", "npm", "yarn",
+    # Compression and encryption tools
+    "gzip", "bzip2", "xz", "zstd", "lz4", "lzop",
+    "pigz", "pbzip2", "pixz",
+    "gpg", "ccencrypt", "openssl",
+    # Bulk sync and overwrite-capable tools
+    "rsync", "rclone", "mogrify", "logrotate",
+    # Databases and datastores with opaque multi-file state
+    "postgres", "mysqld", "mongod",
+}
+
+# Generic user-space launchers are common benign orchestrators.  They are
+# still allowed to inherit child-write evidence, but only under a stricter
+# attribution policy than purpose-built unknown binaries.
+GENERIC_LAUNCHER_PROCESSES = {
+    "bash", "sh", "zsh", "fish", "dash",
+    "python", "python3",
+    "make", "cmake", "ninja",
 }
 
 # Prefixes that identify non-user-file write targets.  Writes to these
@@ -89,6 +85,11 @@ USER_FILE_EXTENSIONS = {
     ".sql", ".db", ".sqlite",
 }
 
+TEMP_LIKE_SUFFIXES = (
+    ".tmp", ".temp", ".swp", ".swo", ".part",
+    ".crdownload", ".download", "~",
+)
+
 
 class RansomwareDetector:
     """Heuristic ransomware detector with false-positive reduction."""
@@ -99,6 +100,7 @@ class RansomwareDetector:
         threshold_writes=None,
         threshold_unlinks=None,
         time_window=None,
+        traversal_arm_window=None,
         whitelist_config=None,
         canary_dirs=None,
         trusted_hashes=None,
@@ -108,6 +110,8 @@ class RansomwareDetector:
         threshold_unique_files=None,
         threshold_unique_dirs=None,
         threshold_dir_scans=None,
+        threshold_traversal_written_files=None,
+        threshold_traversal_written_dirs=None,
         action_mode="simulate",
         snapshot_cmd=None,
         quarantine_dir=None,
@@ -146,6 +150,16 @@ class RansomwareDetector:
                 max(self.time_window, 10.0),
             )
         )
+        self.traversal_arm_window = float(
+            os.getenv(
+                "TRAVERSAL_ARM_WINDOW_SEC",
+                (
+                    traversal_arm_window
+                    if traversal_arm_window is not None
+                    else max(self.time_window, self.attribution_window)
+                ),
+            )
+        )
         self.alert_json = os.getenv("ALERT_JSON", "0") == "1"
         self.alert_json_prefix = os.getenv("ALERT_JSON_PREFIX", "ALERT_JSON")
         self.run_id = os.getenv("RUN_ID", "")
@@ -178,6 +192,26 @@ class RansomwareDetector:
                 threshold_dir_scans if threshold_dir_scans is not None else 5,
             )
         )
+        self.threshold_traversal_written_files = int(
+            os.getenv(
+                "THRESHOLD_TRAVERSAL_WRITTEN_FILES",
+                (
+                    threshold_traversal_written_files
+                    if threshold_traversal_written_files is not None
+                    else 2
+                ),
+            )
+        )
+        self.threshold_traversal_written_dirs = int(
+            os.getenv(
+                "THRESHOLD_TRAVERSAL_WRITTEN_DIRS",
+                (
+                    threshold_traversal_written_dirs
+                    if threshold_traversal_written_dirs is not None
+                    else 1
+                ),
+            )
+        )
 
         # process_stats: { pid: [(timestamp, entropy, filename), ...] }
         self.process_stats = collections.defaultdict(list)
@@ -185,6 +219,10 @@ class RansomwareDetector:
         self.unlink_stats = collections.defaultdict(list)
         # dir_scan_stats: { pid: [(timestamp, directory), ...] }
         self.dir_scan_stats = collections.defaultdict(list)
+        # Traversal arming state keyed by the behavioral subject PID.
+        # Scan+write structure arms suspicion, but a stronger follow-on
+        # signal is required before we emit a ransomware alert.
+        self._traversal_arms: Dict[int, Dict[str, object]] = {}
         # urandom_access: { pid: [timestamp, ...] }
         self.urandom_access: Dict[int, List[float]] = collections.defaultdict(list)
         # kill_events: { pid: [(timestamp, target_comm, signal), ...] }
@@ -526,6 +564,12 @@ class RansomwareDetector:
         if pid in self.open_tracker:
             self.open_tracker[pid] = opened
 
+        traversal_state = self._prune_traversal_arm(pid, now)
+        if traversal_state and (
+            traversal_state["scan_events"] or traversal_state["write_events"]
+        ):
+            return True
+
         return False
 
     def _remember_behavioral_identity(self, pid, comm, now):
@@ -545,8 +589,129 @@ class RansomwareDetector:
             return None
         return comm
 
-    def _find_attributable_ancestor(self, pid, now=None, direct_parent_pid=None):
-        """Find the nearest non-whitelisted ancestor with live behavioral state."""
+    @staticmethod
+    def _path_overlaps_scanned_dirs(filepath, scanned_dirs):
+        """Return True when *filepath* falls under one of *scanned_dirs*."""
+        if not filepath or not scanned_dirs:
+            return False
+        try:
+            write_dir = os.path.abspath(os.path.dirname(filepath) or filepath)
+        except (TypeError, ValueError):
+            return False
+
+        for scanned in scanned_dirs:
+            if not scanned:
+                continue
+            try:
+                scanned_dir = os.path.abspath(scanned)
+                if os.path.commonpath([write_dir, scanned_dir]) == scanned_dir:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _get_recent_scanned_dirs(self, pid, now, window=None):
+        """Return recently scanned directories for *pid* within *window*."""
+        if window is None:
+            window = self.attribution_window
+        entries = [
+            e for e in self.dir_scan_stats.get(pid, [])
+            if now - e[0] <= window
+        ]
+        if entries:
+            self.dir_scan_stats[pid] = entries
+        elif pid in self.dir_scan_stats:
+            self.dir_scan_stats[pid] = entries
+        return {directory for _, directory in entries if directory}
+
+    def _is_generic_launcher(self, comm):
+        """Return True when *comm* is a generic user-space wrapper."""
+        return comm in GENERIC_LAUNCHER_PROCESSES
+
+    def _has_scanned_path_context(
+        self,
+        pid,
+        child_filename,
+        now,
+        required_scans=None,
+    ):
+        """Return True when *pid* recently scanned the path being written."""
+        scanned_dirs = self._get_recent_scanned_dirs(pid, now)
+        if not scanned_dirs:
+            return False
+        if required_scans is None:
+            required_scans = self.threshold_dir_scans
+        if len(scanned_dirs) < required_scans:
+            return False
+        return self._path_overlaps_scanned_dirs(child_filename, scanned_dirs)
+
+    def _has_related_identity_scan_context(
+        self,
+        parent_pid,
+        identity,
+        child_filename,
+        now,
+        required_scans=None,
+    ):
+        """Return True when a same-identity helper family recently scanned the path.
+
+        This keeps the fork/exec helper case intact: short-lived helper PIDs can
+        contribute their pre-exec traversal footprint back to the shared parent
+        identity, but we avoid doing this for generic launcher identities.
+        """
+        if not identity or self._is_generic_launcher(identity):
+            return False
+        if required_scans is None:
+            required_scans = self.threshold_dir_scans
+
+        related_pids = {parent_pid}
+        for candidate_pid in list(self._pid_identity_cache.keys()):
+            if candidate_pid == parent_pid:
+                continue
+            if self._get_recent_behavioral_identity(candidate_pid, now) != identity:
+                continue
+            cached_parent = self._parent_pid_cache.get(candidate_pid)
+            candidate_parent = (
+                cached_parent
+                if cached_parent is not None
+                else self.get_parent_pid(candidate_pid)
+            )
+            if candidate_parent != parent_pid:
+                continue
+            related_pids.add(candidate_pid)
+
+        scanned_dirs = set()
+        for related_pid in related_pids:
+            scanned_dirs.update(self._get_recent_scanned_dirs(related_pid, now))
+
+        if len(scanned_dirs) < required_scans:
+            return False
+        return self._path_overlaps_scanned_dirs(child_filename, scanned_dirs)
+
+    def _is_eligible_attribution_subject(self, pid, comm, child_filename, now):
+        """Return True when *pid* is a meaningful parent for child writes."""
+        if not comm or self.is_whitelisted(comm, pid=pid):
+            return False
+
+        required_scans = self.threshold_dir_scans
+        if self._is_generic_launcher(comm) and not self._is_traversal_armed(pid, now):
+            required_scans += 1
+
+        return self._has_scanned_path_context(
+            pid,
+            child_filename,
+            now,
+            required_scans=required_scans,
+        )
+
+    def _find_attributable_ancestor(
+        self,
+        pid,
+        child_filename,
+        now=None,
+        direct_parent_pid=None,
+    ):
+        """Find the nearest non-whitelisted ancestor eligible for attribution."""
         if now is None:
             now = time.time()
 
@@ -560,15 +725,23 @@ class RansomwareDetector:
             parent_comm = self._read_proc_comm(parent)
             if not parent_comm:
                 return None
-            if (
-                not self.is_whitelisted(parent_comm, pid=parent)
-                and self._has_active_behavioral_profile(parent, now)
+            if self._is_eligible_attribution_subject(
+                parent,
+                parent_comm,
+                child_filename,
+                now,
             ):
                 return parent
             current = parent
         return None
 
-    def _find_attributable_subject(self, pid, now=None, direct_parent_pid=None):
+    def _find_attributable_subject(
+        self,
+        pid,
+        child_filename,
+        now=None,
+        direct_parent_pid=None,
+    ):
         """Find the best process identity to receive a delegated child's write.
 
         Preference order:
@@ -594,11 +767,33 @@ class RansomwareDetector:
                 if (
                     parent_identity == current_identity
                     and parent_identity not in self.whitelisted_processes
+                    and (
+                        self._is_eligible_attribution_subject(
+                            parent_pid,
+                            parent_identity,
+                            child_filename,
+                            now,
+                        )
+                        or self._has_related_identity_scan_context(
+                            parent_pid,
+                            current_identity,
+                            child_filename,
+                            now,
+                            # Fresh fork/exec helpers often split the scan
+                            # footprint across several short-lived child PIDs.
+                            # Once a shared non-generic identity has scoped a
+                            # path, let those writes accumulate on the parent;
+                            # stronger heuristics still decide whether the
+                            # campaign is suspicious.
+                            required_scans=1,
+                        )
+                    )
                 ):
                     return parent_pid, current_identity, "process_tree"
 
         ancestor_pid = self._find_attributable_ancestor(
             pid,
+            child_filename,
             now=now,
             direct_parent_pid=direct_parent_pid,
         )
@@ -745,6 +940,33 @@ class RansomwareDetector:
         _, ext = os.path.splitext(filepath)
         return ext.lower() in USER_FILE_EXTENSIONS
 
+    @staticmethod
+    def _is_temp_like_user_target(filepath):
+        """Return True if *filepath* looks like a temp/runtime artifact."""
+        basename = os.path.basename(filepath or "")
+        if not basename:
+            return False
+        lowered = basename.lower()
+        if filepath.startswith("/tmp/"):
+            return True
+        return lowered.endswith(TEMP_LIKE_SUFFIXES)
+
+    @classmethod
+    def is_meaningful_user_target(cls, filepath):
+        """Return True for user-file targets meaningful to ransomware impact.
+
+        We prefer obvious user-document types, but we also allow other
+        non-temp user files so the cumulative path still covers generic
+        victim files such as images or opaque application data.
+        """
+        if not cls.is_user_file(filepath):
+            return False
+        if cls._is_temp_like_user_target(filepath):
+            return False
+        if cls.is_user_document(filepath):
+            return True
+        return True
+
     # ------------------------------------------------------------------
     # File diversity scoring
     # ------------------------------------------------------------------
@@ -778,11 +1000,23 @@ class RansomwareDetector:
             }
         return self._process_profiles[pid]
 
+    @staticmethod
+    def _has_cumulative_ransomware_anchor(profile):
+        """Return True when cumulative evidence includes encryption-like anchors."""
+        high_entropy_files = len(profile["high_entropy_files"])
+        in_place_overwrites = len(profile["in_place_overwrites"])
+        urandom_reads = profile["urandom_reads"]
+        return (
+            in_place_overwrites >= 1
+            or high_entropy_files >= 2
+            or (high_entropy_files >= 1 and urandom_reads >= 1)
+        )
+
     def _update_profile_write(self, pid, filename, entropy, is_overwrite):
         """Update the cumulative profile after a high-entropy write."""
         if entropy <= self.threshold_entropy:
             return
-        if not self.is_user_file(filename):
+        if not self.is_meaningful_user_target(filename):
             return
 
         profile = self._get_profile(pid)
@@ -806,6 +1040,8 @@ class RansomwareDetector:
         Only scores unlinks of files the PID did NOT recently write to
         (i.e., deleting originals after encrypting copies).
         """
+        if not self.is_meaningful_user_target(filename):
+            return
         profile = self._get_profile(pid)
         recent_writes = profile["high_entropy_files"]
         if filename not in recent_writes:
@@ -840,6 +1076,8 @@ class RansomwareDetector:
         if pid in self._cumulative_alerted:
             return  # Already alerted for this PID
         profile = self._get_profile(pid)
+        if not self._has_cumulative_ransomware_anchor(profile):
+            return
         if profile["score"] >= self.cumulative_score_threshold:
             self._cumulative_alerted.add(pid)
             n_files = len(profile["high_entropy_files"])
@@ -871,6 +1109,7 @@ class RansomwareDetector:
                 source_deletions=n_unlinks,
                 urandom_reads=n_urandom,
                 kill_signals=n_kills,
+                **self._get_traversal_context(pid),
             )
             self.take_action(pid, comm, "Slow-burn ransomware")
 
@@ -999,13 +1238,14 @@ class RansomwareDetector:
         self.emit_alert(pid, comm, reason, severity=severity, **extra)
         return alert
 
-    def _record_write_signal(self, pid, filename, entropy, now):
+    def _record_write_signal(self, pid, filename, entropy, now, attributed=False):
         """Record a write sample so accumulated heuristics can inspect it."""
         self.process_stats[pid].append((now, entropy, filename))
         self.process_stats[pid] = [
             e for e in self.process_stats[pid]
             if now - e[0] <= self.time_window
         ]
+        self._update_traversal_arm_write(pid, filename, now, attributed=attributed)
         self._pid_modified_files[pid].append(filename)
 
         if entropy > self.threshold_entropy:
@@ -1055,6 +1295,8 @@ class RansomwareDetector:
             if attribution_mode is not None:
                 extra["attribution_mode"] = attribution_mode
             suffix = f" (attributed from child {child_comm} PID {child_pid})"
+
+        extra.update(self._get_traversal_context(pid, now))
 
         unique_files, unique_dirs = self.get_file_diversity(pid)
         if (
@@ -1120,6 +1362,7 @@ class RansomwareDetector:
         direct_parent_pid = getattr(event, "ppid", 0) or self._parent_pid_cache.get(pid)
         subject = self._find_attributable_subject(
             pid,
+            filename,
             now=now,
             direct_parent_pid=direct_parent_pid,
         )
@@ -1132,7 +1375,13 @@ class RansomwareDetector:
             return False
 
         entropy = self.calculate_entropy(bytes(event.buffer[:sample_len]))
-        self._record_write_signal(subject_pid, filename, entropy, now)
+        self._record_write_signal(
+            subject_pid,
+            filename,
+            entropy,
+            now,
+            attributed=True,
+        )
         self._check_behavioral_heuristics(
             subject_pid,
             comm=subject_comm,
@@ -1146,7 +1395,13 @@ class RansomwareDetector:
         """Return True when a child's WRITE should also roll up to a parent."""
         return self.attribute_all_child_writes or comm in self.whitelisted_processes
 
-    def _should_suppress_whitelisted_helper(self, pid, now=None, direct_parent_pid=None):
+    def _should_suppress_whitelisted_helper(
+        self,
+        pid,
+        filename,
+        now=None,
+        direct_parent_pid=None,
+    ):
         """Return True when a trusted helper is acting under an attributable parent.
 
         This keeps the helper itself quiet while allowing the parent
@@ -1154,10 +1409,149 @@ class RansomwareDetector:
         """
         subject = self._find_attributable_subject(
             pid,
+            filename,
             now=now,
             direct_parent_pid=direct_parent_pid,
         )
         return subject is not None and subject[0] != pid
+
+    # ------------------------------------------------------------------
+    # Traversal arming helpers
+    # ------------------------------------------------------------------
+
+    def _get_or_create_traversal_arm(self, pid):
+        """Return the traversal-arm state for *pid*, creating it if needed."""
+        return self._traversal_arms.setdefault(
+            pid,
+            {
+                "scan_events": [],
+                "write_events": [],
+                "armed_at": None,
+                "last_seen": 0.0,
+            },
+        )
+
+    def _prune_traversal_arm(self, pid, now):
+        """Prune stale traversal context for *pid* and expire quiet arms."""
+        state = self._traversal_arms.get(pid)
+        if not state:
+            return None
+
+        state["scan_events"] = [
+            e for e in state["scan_events"]
+            if now - e[0] <= self.traversal_arm_window
+        ]
+        state["write_events"] = [
+            e for e in state["write_events"]
+            if now - e[0] <= self.traversal_arm_window
+        ]
+        state["last_seen"] = now
+
+        if not state["scan_events"] and not state["write_events"]:
+            self._traversal_arms.pop(pid, None)
+            return None
+
+        scanned_dirs, written_files, written_dirs, _ = self._get_traversal_arm_counts(
+            pid,
+            now=now,
+            prune=False,
+        )
+        if not self._should_arm_traversal(scanned_dirs, written_files, written_dirs):
+            state["armed_at"] = None
+        return state
+
+    def _get_traversal_arm_counts(self, pid, now=None, prune=True):
+        """Return active traversal-arm counts for *pid*."""
+        if now is None:
+            now = time.time()
+        state = self._prune_traversal_arm(pid, now) if prune else self._traversal_arms.get(pid)
+        if not state:
+            return 0, 0, 0, False
+
+        unique_scanned = {directory for _, directory in state["scan_events"]}
+        unique_files = {filename for _, filename, _ in state["write_events"]}
+        unique_dirs = {
+            os.path.dirname(filename)
+            for _, filename, _ in state["write_events"]
+            if filename
+        }
+        saw_attributed_write = any(
+            attributed for _, _, attributed in state["write_events"]
+        )
+        return (
+            len(unique_scanned),
+            len(unique_files),
+            len(unique_dirs),
+            saw_attributed_write,
+        )
+
+    def _should_arm_traversal(self, scanned_dirs, written_files, written_dirs):
+        """Return True when scan and write structure is strong enough to arm."""
+        return (
+            scanned_dirs >= self.threshold_dir_scans
+            and written_files >= self.threshold_traversal_written_files
+            and written_dirs >= self.threshold_traversal_written_dirs
+        )
+
+    def _arm_traversal_if_ready(self, pid, now):
+        """Mark *pid* as traversal-armed once both scan and write gates are met."""
+        state = self._traversal_arms.get(pid)
+        if not state:
+            return False
+        scanned_dirs, written_files, written_dirs, _ = self._get_traversal_arm_counts(
+            pid,
+            now=now,
+            prune=False,
+        )
+        if not self._should_arm_traversal(scanned_dirs, written_files, written_dirs):
+            return False
+        if state["armed_at"] is None:
+            state["armed_at"] = now
+        return True
+
+    def _update_traversal_arm_scan(self, pid, directory, now):
+        """Record a directory scan as context for later confirmation."""
+        if not directory:
+            return
+        state = self._get_or_create_traversal_arm(pid)
+        state["scan_events"].append((now, directory))
+        self._prune_traversal_arm(pid, now)
+        self._arm_traversal_if_ready(pid, now)
+
+    def _update_traversal_arm_write(self, pid, filename, now, attributed=False):
+        """Record a write as context for later traversal confirmation."""
+        if not filename:
+            return
+        state = self._get_or_create_traversal_arm(pid)
+        state["write_events"].append((now, filename, bool(attributed)))
+        self._prune_traversal_arm(pid, now)
+        self._arm_traversal_if_ready(pid, now)
+
+    def _is_traversal_armed(self, pid, now=None):
+        """Return True when *pid* is currently in an armed traversal campaign."""
+        if now is None:
+            now = time.time()
+        state = self._prune_traversal_arm(pid, now)
+        return bool(state and state.get("armed_at") is not None)
+
+    def _get_traversal_context(self, pid, now=None):
+        """Return traversal arming metadata to attach to stronger alerts."""
+        if now is None:
+            now = time.time()
+        if not self._is_traversal_armed(pid, now):
+            return {}
+        scanned_dirs, written_files, written_dirs, saw_attributed = (
+            self._get_traversal_arm_counts(pid, now=now, prune=False)
+        )
+        state = self._traversal_arms.get(pid, {})
+        return {
+            "armed_by_traversal": True,
+            "armed_scanned_dirs": scanned_dirs,
+            "armed_written_files": written_files,
+            "armed_written_dirs": written_dirs,
+            "armed_saw_attributed_write": saw_attributed,
+            "armed_at": state.get("armed_at"),
+        }
 
     # ------------------------------------------------------------------
     # Core event analysis
@@ -1194,6 +1588,7 @@ class RansomwareDetector:
             and not is_canary_access
             and self._should_suppress_whitelisted_helper(
                 pid,
+                filename,
                 now=now,
                 direct_parent_pid=ppid,
             )
@@ -1279,7 +1674,10 @@ class RansomwareDetector:
                 )
                 self._record_alert(
                     pid, comm, "Magic bytes destroyed",
-                    severity="critical", entropy=entropy, filename=filename,
+                    severity="critical",
+                    entropy=entropy,
+                    filename=filename,
+                    **self._get_traversal_context(pid, now),
                 )
                 self.take_action(pid, comm, "Magic bytes destroyed")
 
@@ -1293,7 +1691,10 @@ class RansomwareDetector:
                     )
                     self._record_alert(
                         pid, comm, "In-place overwrite",
-                        severity="critical", entropy=entropy, filename=filename,
+                        severity="critical",
+                        entropy=entropy,
+                        filename=filename,
+                        **self._get_traversal_context(pid, now),
                     )
                     self.take_action(pid, comm, "In-place overwrite")
 
@@ -1320,7 +1721,9 @@ class RansomwareDetector:
                 )
                 self._record_alert(
                     pid, comm, "Write-then-delete",
-                    severity="critical", deleted_file=filename,
+                    severity="critical",
+                    deleted_file=filename,
+                    **self._get_traversal_context(pid, now),
                 )
                 self.take_action(pid, comm, "Write-then-delete")
 
@@ -1338,7 +1741,12 @@ class RansomwareDetector:
                     f"({len(self.unlink_stats[pid])} in "
                     f"{self.time_window}s)"
                 )
-                self._record_alert(pid, comm, "High unlink frequency")
+                self._record_alert(
+                    pid,
+                    comm,
+                    "High unlink frequency",
+                    **self._get_traversal_context(pid, now),
+                )
                 self.take_action(pid, comm, "High unlink frequency")
 
         elif event.type == 4:  # GETDENTS (directory listing)
@@ -1350,28 +1758,7 @@ class RansomwareDetector:
                 e for e in self.dir_scan_stats[pid]
                 if now - e[0] <= self.time_window
             ]
-
-            unique_scanned = {e[1] for e in self.dir_scan_stats[pid]}
-            has_recent_writes = len(self.process_stats.get(pid, [])) > 0
-
-            if (
-                len(unique_scanned) >= self.threshold_dir_scans
-                and has_recent_writes
-            ):
-                print(
-                    f"[!!!] ALERT: Directory traversal + write activity "
-                    f"from {comm} (PID {pid})"
-                )
-                print(
-                    f"      Scanned {len(unique_scanned)} directories "
-                    f"in {self.time_window}s with active writes"
-                )
-                self._record_alert(
-                    pid, comm, "Directory traversal + Writes",
-                    severity="critical",
-                    scanned_dirs=len(unique_scanned),
-                )
-                self.take_action(pid, comm, "Directory traversal + Writes")
+            self._update_traversal_arm_scan(pid, directory, now)
 
         elif event.type == 5:  # URANDOM_READ
             self.urandom_access[pid].append(now)
@@ -1398,6 +1785,7 @@ class RansomwareDetector:
                         severity="high",
                         urandom_reads=len(self.urandom_access[pid]),
                         recent_he_files=len(unique_files),
+                        **self._get_traversal_context(pid, now),
                     )
                     self.take_action(pid, comm, "Urandom + high-entropy writes")
 

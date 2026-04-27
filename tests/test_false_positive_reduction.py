@@ -31,7 +31,7 @@ class TestProcessWhitelist(unittest.TestCase):
         )
 
     def test_default_whitelist_contains_common_tools(self):
-        for proc in ("git", "gcc", "apt", "rsync", "vim", "postgres", "gpg"):
+        for proc in ("git", "apt", "rsync", "postgres", "gpg", "gzip", "openssl"):
             self.assertTrue(
                 self.detector.is_whitelisted(proc),
                 f"{proc} should be whitelisted by default",
@@ -44,7 +44,9 @@ class TestProcessWhitelist(unittest.TestCase):
         """A whitelisted process doing high-entropy writes must be silent."""
         high_entropy_buf = os.urandom(128)
         for i in range(20):
-            evt = make_event(1, 1000, "gcc", f"/tmp/obj_{i}.o", 128, high_entropy_buf)
+            evt = make_event(
+                1, 1000, "gzip", f"/home/user/archive_{i}.gz", 128, high_entropy_buf
+            )
             self.detector.analyze_event(evt)
         self.assertEqual(len(self.detector.alerts), 0)
 
@@ -57,7 +59,7 @@ class TestProcessWhitelist(unittest.TestCase):
 
     def test_whitelisted_process_unlink_generates_no_alert(self):
         for i in range(20):
-            evt = make_event(3, 1001, "make", f"/tmp/tmp_{i}.o", 0, b"")
+            evt = make_event(3, 1001, "logrotate", f"/var/log/app.log.{i}", 0, b"")
             self.detector.analyze_event(evt)
         self.assertEqual(len(self.detector.alerts), 0)
 
@@ -106,7 +108,7 @@ class TestProcessWhitelist(unittest.TestCase):
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
         ) as fh:
-            json.dump({"remove_whitelisted_processes": ["gpg", "gcc"]}, fh)
+            json.dump({"remove_whitelisted_processes": ["gpg", "gzip"]}, fh)
             cfg_path = fh.name
         try:
             det = RansomwareDetector(
@@ -114,7 +116,7 @@ class TestProcessWhitelist(unittest.TestCase):
                 verify_binary_hash=False, verify_lineage=False,
             )
             self.assertFalse(det.is_whitelisted("gpg"))
-            self.assertFalse(det.is_whitelisted("gcc"))
+            self.assertFalse(det.is_whitelisted("gzip"))
             self.assertTrue(det.is_whitelisted("git"))
         finally:
             os.unlink(cfg_path)
@@ -164,7 +166,7 @@ class TestBinaryHashVerification(unittest.TestCase):
         with mock.patch.object(
             RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=9999))
+            self.assertTrue(det.is_whitelisted("gpg", pid=9999))
         self.assertEqual(len(det.alerts), 0)
 
     def test_mismatched_hash_revokes_whitelist(self):
@@ -176,7 +178,7 @@ class TestBinaryHashVerification(unittest.TestCase):
         with mock.patch.object(
             RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
         ):
-            self.assertFalse(det.is_whitelisted("gcc", pid=9999))
+            self.assertFalse(det.is_whitelisted("gpg", pid=9999))
         hash_alerts = [a for a in det.alerts if a["reason"] == "Binary hash mismatch"]
         self.assertEqual(len(hash_alerts), 1)
 
@@ -187,20 +189,20 @@ class TestBinaryHashVerification(unittest.TestCase):
             verify_lineage=False,
         )
         with mock.patch.object(
-            RansomwareDetector, "_resolve_exe", return_value="/usr/bin/gcc"
+            RansomwareDetector, "_resolve_exe", return_value="/usr/bin/gpg"
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=9999))
+            self.assertTrue(det.is_whitelisted("gpg", pid=9999))
 
     def test_unreadable_exe_is_trusted(self):
         """If /proc/<pid>/exe can't be resolved, skip the check."""
         det = RansomwareDetector(
-            trusted_hashes={"/usr/bin/gcc": ["some_hash"]},
+            trusted_hashes={"/usr/bin/gpg": ["some_hash"]},
             verify_lineage=False,
         )
         with mock.patch.object(
             RansomwareDetector, "_resolve_exe", return_value=None
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=9999))
+            self.assertTrue(det.is_whitelisted("gpg", pid=9999))
 
     def test_hash_cache_avoids_rehashing(self):
         """The hash should be computed once and cached for the same pid+path."""
@@ -213,13 +215,13 @@ class TestBinaryHashVerification(unittest.TestCase):
         ), mock.patch.object(
             RansomwareDetector, "hash_binary", wraps=RansomwareDetector.hash_binary
         ) as mock_hash:
-            det.is_whitelisted("gcc", pid=9999)
-            det.is_whitelisted("gcc", pid=9999)
+            det.is_whitelisted("gpg", pid=9999)
+            det.is_whitelisted("gpg", pid=9999)
             # hash_binary should only be called once — second call uses cache.
             mock_hash.assert_called_once()
 
     def test_tampered_binary_triggers_alert_on_event(self):
-        """End-to-end: a 'gcc' with a bad hash doing writes → alerts fire."""
+        """End-to-end: a 'gpg' with a bad hash doing writes → alerts fire."""
         det = RansomwareDetector(
             trusted_hashes={self.tmpfile.name: ["wrong_hash"]},
             verify_lineage=False,
@@ -231,7 +233,9 @@ class TestBinaryHashVerification(unittest.TestCase):
             RansomwareDetector, "_resolve_exe", return_value=self.tmpfile.name
         ):
             for i in range(5):
-                evt = make_event(1, 9999, "gcc", f"/tmp/obj_{i}.o", 128, buf)
+                evt = make_event(
+                    1, 9999, "gpg", f"/home/user/secret_{i}.txt.gpg", 128, buf
+                )
                 det.analyze_event(evt)
         # Should have hash-mismatch alert(s) AND detection alerts.
         hash_alerts = [a for a in det.alerts if a["reason"] == "Binary hash mismatch"]
@@ -278,7 +282,7 @@ class TestProcessLineageValidation(unittest.TestCase):
             det, "get_process_lineage",
             return_value=[(99, "bash"), (1, "systemd")],
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+            self.assertTrue(det.is_whitelisted("gpg", pid=100))
         self.assertEqual(len(det.alerts), 0)
 
     def test_untrusted_parent_revokes_whitelist(self):
@@ -288,7 +292,7 @@ class TestProcessLineageValidation(unittest.TestCase):
             det, "get_process_lineage",
             return_value=[(50, "evil_dropper"), (1, "unknown_init")],
         ):
-            self.assertFalse(det.is_whitelisted("gcc", pid=100))
+            self.assertFalse(det.is_whitelisted("gpg", pid=100))
         lineage_alerts = [
             a for a in det.alerts if a["reason"] == "Untrusted process lineage"
         ]
@@ -300,7 +304,7 @@ class TestProcessLineageValidation(unittest.TestCase):
         with mock.patch.object(
             det, "get_process_lineage", return_value=[],
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+            self.assertTrue(det.is_whitelisted("gpg", pid=100))
 
     def test_lineage_with_only_unreadable_comms_is_trusted(self):
         """If ancestor PIDs exist but all comm lookups fail, trust it."""
@@ -308,7 +312,7 @@ class TestProcessLineageValidation(unittest.TestCase):
         with mock.patch.object(
             det, "get_process_lineage", return_value=[(99, None), (1, None)],
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+            self.assertTrue(det.is_whitelisted("gpg", pid=100))
 
     def test_lineage_cache_avoids_recheck(self):
         """Lineage is checked once per PID and cached."""
@@ -317,12 +321,12 @@ class TestProcessLineageValidation(unittest.TestCase):
             det, "get_process_lineage",
             return_value=[(99, "bash")],
         ) as mock_lineage:
-            det.is_whitelisted("gcc", pid=100)
-            det.is_whitelisted("gcc", pid=100)
+            det.is_whitelisted("gpg", pid=100)
+            det.is_whitelisted("gpg", pid=100)
             mock_lineage.assert_called_once()
 
     def test_untrusted_lineage_triggers_alert_on_event(self):
-        """End-to-end: a 'gcc' with bad lineage doing writes → alerts fire."""
+        """End-to-end: a 'gpg' with bad lineage doing writes → alerts fire."""
         det = RansomwareDetector(
             verify_binary_hash=False,
             threshold_writes=2,
@@ -334,7 +338,9 @@ class TestProcessLineageValidation(unittest.TestCase):
             return_value=[(50, "evil_dropper")],
         ):
             for i in range(5):
-                evt = make_event(1, 100, "gcc", f"/tmp/obj_{i}.o", 128, buf)
+                evt = make_event(
+                    1, 100, "gpg", f"/home/user/secret_{i}.txt.gpg", 128, buf
+                )
                 det.analyze_event(evt)
         lineage_alerts = [
             a for a in det.alerts if a["reason"] == "Untrusted process lineage"
@@ -356,7 +362,7 @@ class TestProcessLineageValidation(unittest.TestCase):
             det, "get_process_lineage",
             return_value=[(50, "my_orchestrator")],
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+            self.assertTrue(det.is_whitelisted("gpg", pid=100))
 
     def test_load_trusted_parents_from_config(self):
         """Trusted parents can be loaded from the JSON config file."""
@@ -411,7 +417,7 @@ class TestHashAndLineageCombined(unittest.TestCase):
         ), mock.patch.object(
             det, "get_process_lineage", return_value=[(99, "bash")],
         ):
-            self.assertTrue(det.is_whitelisted("gcc", pid=100))
+            self.assertTrue(det.is_whitelisted("gpg", pid=100))
         self.assertEqual(len(det.alerts), 0)
 
     def test_hash_pass_lineage_fail_revokes(self):
@@ -423,7 +429,7 @@ class TestHashAndLineageCombined(unittest.TestCase):
         ), mock.patch.object(
             det, "get_process_lineage", return_value=[(50, "evil_dropper")],
         ):
-            self.assertFalse(det.is_whitelisted("gcc", pid=100))
+            self.assertFalse(det.is_whitelisted("gpg", pid=100))
 
     def test_hash_fail_lineage_pass_revokes(self):
         det = RansomwareDetector(
@@ -435,7 +441,7 @@ class TestHashAndLineageCombined(unittest.TestCase):
             det, "get_process_lineage", return_value=[(99, "bash")],
         ):
             # Hash check fails first, so lineage is never reached.
-            self.assertFalse(det.is_whitelisted("gcc", pid=100))
+            self.assertFalse(det.is_whitelisted("gpg", pid=100))
 
     def test_both_fail_revokes(self):
         det = RansomwareDetector(
@@ -446,7 +452,7 @@ class TestHashAndLineageCombined(unittest.TestCase):
         ), mock.patch.object(
             det, "get_process_lineage", return_value=[(50, "evil_dropper")],
         ):
-            self.assertFalse(det.is_whitelisted("gcc", pid=100))
+            self.assertFalse(det.is_whitelisted("gpg", pid=100))
 
 
 # ---------------------------------------------------------------------------
@@ -731,16 +737,19 @@ class TestFileDiversityScoring(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestDirectoryTraversalDetection(unittest.TestCase):
-    """Verify that rapid directory scanning + writes triggers alerts."""
+    """Verify that traversal now arms context instead of alerting directly."""
 
-    def test_dir_scan_with_writes_triggers_alert(self):
-        """Scanning many directories while also writing → alert."""
+    def test_dir_scan_with_writes_arms_but_does_not_alert(self):
+        """Scanning many directories with low-entropy writes should only arm."""
         det = RansomwareDetector(
             threshold_dir_scans=3,
+            threshold_writes=100,
+            threshold_unique_files=100,
+            threshold_unique_dirs=100,
             time_window=10.0,
             verify_binary_hash=False, verify_lineage=False,
         )
-        buf = os.urandom(128)
+        buf = b"A" * 128
         # First, some writes to establish write activity
         for i in range(3):
             evt = make_event(1, 13000, "evil", f"/home/user/f{i}.doc", 128, buf)
@@ -751,13 +760,15 @@ class TestDirectoryTraversalDetection(unittest.TestCase):
         for d in dirs:
             evt = make_event(4, 13000, "evil", f"{d}/somefile", 0, b"")
             det.analyze_event(evt)
-        traversal_alerts = [
-            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
-        ]
-        self.assertGreater(len(traversal_alerts), 0)
+        self.assertEqual(det.alerts, [])
+        self.assertTrue(det._is_traversal_armed(13000))
+        ctx = det._get_traversal_context(13000)
+        self.assertTrue(ctx["armed_by_traversal"])
+        self.assertGreaterEqual(ctx["armed_scanned_dirs"], 3)
+        self.assertGreaterEqual(ctx["armed_written_files"], 2)
 
-    def test_dir_scan_without_writes_no_alert(self):
-        """Directory scanning alone (no writes) should not trigger."""
+    def test_dir_scan_without_writes_no_arm(self):
+        """Directory scanning alone should not arm traversal context."""
         det = RansomwareDetector(
             threshold_dir_scans=3,
             time_window=10.0,
@@ -767,48 +778,50 @@ class TestDirectoryTraversalDetection(unittest.TestCase):
         for d in dirs:
             evt = make_event(4, 13001, "find", f"{d}/x", 0, b"")
             det.analyze_event(evt)
-        traversal_alerts = [
-            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
-        ]
-        self.assertEqual(len(traversal_alerts), 0)
+        self.assertEqual(det.alerts, [])
+        self.assertFalse(det._is_traversal_armed(13001))
 
-    def test_few_dir_scans_no_alert(self):
-        """Scanning fewer directories than the threshold → no alert."""
+    def test_few_dir_scans_no_arm(self):
+        """Scanning fewer directories than the threshold should not arm."""
         det = RansomwareDetector(
             threshold_dir_scans=5,
+            threshold_writes=100,
+            threshold_unique_files=100,
+            threshold_unique_dirs=100,
             time_window=10.0,
             verify_binary_hash=False, verify_lineage=False,
         )
-        buf = os.urandom(128)
+        buf = b"A" * 128
         evt = make_event(1, 13002, "evil", "/home/user/f.doc", 128, buf)
         det.analyze_event(evt)
         # Only 2 directory scans — below threshold of 5
         for d in ["/home/a", "/home/b"]:
             evt = make_event(4, 13002, "evil", f"{d}/x", 0, b"")
             det.analyze_event(evt)
-        traversal_alerts = [
-            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
-        ]
-        self.assertEqual(len(traversal_alerts), 0)
+        self.assertEqual(det.alerts, [])
+        self.assertFalse(det._is_traversal_armed(13002))
 
-    def test_dir_scans_expire_outside_window(self):
-        """Old directory scans outside the time window should not count."""
+    def test_dir_scans_expire_outside_arm_window(self):
+        """Traversal context should expire quietly when the arm window passes."""
         det = RansomwareDetector(
             threshold_dir_scans=3,
             time_window=0.01,  # Very short window
+            traversal_arm_window=0.01,
+            threshold_writes=100,
+            threshold_unique_files=100,
+            threshold_unique_dirs=100,
             verify_binary_hash=False, verify_lineage=False,
         )
-        buf = os.urandom(128)
-        evt = make_event(1, 13003, "evil", "/home/user/f.doc", 128, buf)
-        det.analyze_event(evt)
+        for i in range(2):
+            evt = make_event(1, 13003, "evil", f"/home/user/f{i}.doc", 128, b"A" * 128)
+            det.analyze_event(evt)
+            time.sleep(0.02)
         for d in ["/home/a", "/home/b", "/home/c", "/home/d"]:
             evt = make_event(4, 13003, "evil", f"{d}/x", 0, b"")
             det.analyze_event(evt)
             time.sleep(0.02)  # Each scan expires before the next
-        traversal_alerts = [
-            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
-        ]
-        self.assertEqual(len(traversal_alerts), 0)
+        self.assertEqual(det.alerts, [])
+        self.assertFalse(det._is_traversal_armed(13003))
 
 
 # ---------------------------------------------------------------------------
@@ -872,29 +885,30 @@ class TestDefragVsRansomware(unittest.TestCase):
         ]
         self.assertGreater(len(diversity_alerts), 0)
 
-    def test_ransomware_scan_then_encrypt_detected(self):
-        """Ransomware scanning directories then encrypting → traversal alert."""
+    def test_ransomware_scan_then_encrypt_detected_with_armed_context(self):
+        """Traversal should arm first, then stronger write signals should confirm."""
         det = RansomwareDetector(
             threshold_dir_scans=3,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_writes=100,
             time_window=10.0,
             verify_binary_hash=False, verify_lineage=False,
         )
         buf = os.urandom(128)
-        # Phase 1: scan directories
         scan_dirs = ["/home/user/Documents", "/home/user/Pictures",
                      "/home/user/Music"]
-        # Phase 2: encrypt files (writes first so process_stats has entries)
-        for d in scan_dirs:
-            evt = make_event(1, 14003, "locker", f"{d}/file.doc", 128, buf)
-            det.analyze_event(evt)
-        # Now scan
         for d in scan_dirs:
             evt = make_event(4, 14003, "locker", f"{d}/.", 0, b"")
             det.analyze_event(evt)
-        traversal_alerts = [
-            a for a in det.alerts if a["reason"] == "Directory traversal + Writes"
+        for d in scan_dirs:
+            evt = make_event(1, 14003, "locker", f"{d}/file.doc", 128, buf)
+            det.analyze_event(evt)
+        diversity_alerts = [
+            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
         ]
-        self.assertGreater(len(traversal_alerts), 0)
+        self.assertGreater(len(diversity_alerts), 0)
+        self.assertTrue(any(a.get("armed_by_traversal") for a in diversity_alerts))
 
     def test_database_var_lib_writes_no_alerts(self):
         """A whitelisted database writing to /var/lib/ → no alerts."""

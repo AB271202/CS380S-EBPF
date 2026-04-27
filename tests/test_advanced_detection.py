@@ -30,6 +30,7 @@ class TestProcessTreeAttribution(unittest.TestCase):
             threshold_entropy=5.0,
             threshold_unique_files=3,
             threshold_unique_dirs=2,
+            threshold_dir_scans=3,
             threshold_writes=100,  # isolate the diversity heuristic
             time_window=10.0,
             verify_binary_hash=False,
@@ -68,6 +69,7 @@ class TestProcessTreeAttribution(unittest.TestCase):
         self.assertTrue(
             any(a.get("attributed_from_comm") == "ccencrypt" for a in parent_alerts)
         )
+        self.assertTrue(any(a.get("armed_by_traversal") for a in parent_alerts))
         self.assertEqual(len([a for a in det.alerts if a["pid"] == child_pid]), 0)
 
     def test_bpf_provided_ppid_avoids_short_lived_child_race(self):
@@ -76,6 +78,7 @@ class TestProcessTreeAttribution(unittest.TestCase):
             threshold_entropy=5.0,
             threshold_unique_files=3,
             threshold_unique_dirs=2,
+            threshold_dir_scans=3,
             threshold_writes=100,
             time_window=10.0,
             verify_binary_hash=False,
@@ -123,6 +126,7 @@ class TestProcessTreeAttribution(unittest.TestCase):
             threshold_entropy=5.0,
             threshold_unique_files=3,
             threshold_unique_dirs=2,
+            threshold_dir_scans=3,
             threshold_writes=100,
             time_window=10.0,
             verify_binary_hash=False,
@@ -215,6 +219,7 @@ class TestProcessTreeAttribution(unittest.TestCase):
             threshold_entropy=5.0,
             threshold_unique_files=3,
             threshold_unique_dirs=2,
+            threshold_dir_scans=3,
             threshold_writes=100,
             time_window=10.0,
             verify_binary_hash=False,
@@ -252,6 +257,7 @@ class TestProcessTreeAttribution(unittest.TestCase):
             threshold_entropy=5.0,
             threshold_unique_files=3,
             threshold_unique_dirs=2,
+            threshold_dir_scans=3,
             threshold_writes=100,
             time_window=10.0,
             verify_binary_hash=False,
@@ -340,6 +346,7 @@ class TestProcessTreeAttribution(unittest.TestCase):
             threshold_entropy=5.0,
             threshold_unique_files=3,
             threshold_unique_dirs=2,
+            threshold_dir_scans=3,
             threshold_writes=100,
             time_window=10.0,
             verify_binary_hash=False,
@@ -382,6 +389,97 @@ class TestProcessTreeAttribution(unittest.TestCase):
         self.assertTrue(
             any(a.get("attributed_from_comm") == "customcrypt" for a in parent_alerts)
         )
+        self.assertTrue(any(a.get("armed_by_traversal") for a in parent_alerts))
+
+    def test_generic_launcher_needs_stronger_context_for_child_attribution(self):
+        """A generic shell parent should not inherit child writes on weak scan context."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_dir_scans=3,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+            attribute_all_child_writes=True,
+        )
+        buf = os.urandom(128)
+        parent_pid = 25200
+        child_pid = 25201
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        for directory in dirs:
+            det.analyze_event(
+                make_event(4, parent_pid, b"bash\x00", f"{directory}/.", 0, b"")
+            )
+
+        with mock.patch.object(det, "_read_proc_comm", return_value="bash"):
+            for i, directory in enumerate(dirs):
+                det.analyze_event(
+                    make_event(
+                        1,
+                        child_pid,
+                        b"dd\x00",
+                        f"{directory}/sample_{i}.bin",
+                        128,
+                        buf,
+                        ppid=parent_pid,
+                    )
+                )
+
+        parent_alerts = [a for a in det.alerts if a["pid"] == parent_pid]
+        self.assertEqual(parent_alerts, [])
+
+    def test_child_write_outside_parent_scanned_paths_is_not_attributed(self):
+        """A child write outside the parent's scanned tree should stay per-PID."""
+        det = RansomwareDetector(
+            threshold_entropy=5.0,
+            threshold_unique_files=3,
+            threshold_unique_dirs=2,
+            threshold_dir_scans=3,
+            threshold_writes=100,
+            time_window=10.0,
+            verify_binary_hash=False,
+            verify_lineage=False,
+            attribute_all_child_writes=True,
+        )
+        buf = os.urandom(128)
+        parent_pid = 25300
+        child_pid = 25301
+        dirs = [
+            "/home/user/Documents",
+            "/home/user/Pictures",
+            "/home/user/Desktop",
+        ]
+
+        for directory in dirs:
+            det.analyze_event(
+                make_event(4, parent_pid, b"ransim_dlg\x00", f"{directory}/.", 0, b"")
+            )
+
+        with mock.patch.object(det, "_read_proc_comm", return_value="ransim_dlg"):
+            for i in range(3):
+                det.analyze_event(
+                    make_event(
+                        1,
+                        child_pid,
+                        b"customcrypt\x00",
+                        f"/tmp/outside_{i}/file_{i}.enc",
+                        128,
+                        buf,
+                        ppid=parent_pid,
+                    )
+                )
+
+        parent_alerts = [a for a in det.alerts if a["pid"] == parent_pid]
+        child_alerts = [a for a in det.alerts if a["pid"] == child_pid]
+        self.assertEqual(parent_alerts, [])
+        self.assertGreater(len(child_alerts), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -486,13 +584,38 @@ class TestSlowBurnDetection(unittest.TestCase):
         slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
         self.assertEqual(len(slow_alerts), 0)
 
+    def test_unlinks_without_entropy_anchor_dont_trigger(self):
+        """Delete-heavy activity alone should not be labeled ransomware."""
+        det = self._det(cumulative_score_threshold=5)
+        for i in range(5):
+            time.sleep(0.02)
+            evt = make_event(3, 20009, "cleanup", f"/home/user/docs/f{i}.doc", 0, b"")
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 0)
+
+    def test_temp_like_high_entropy_files_dont_anchor_cumulative_alert(self):
+        """Opaque temp artifacts should not count as ransomware-impact targets."""
+        det = self._det(cumulative_score_threshold=5)
+        buf = os.urandom(128)
+        for i in range(4):
+            time.sleep(0.02)
+            evt = make_event(1, 20010, "worker", f"/tmp/blob_{i}.tmp", 128, buf)
+            det.analyze_event(evt)
+
+        slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
+        self.assertEqual(len(slow_alerts), 0)
+
     def test_whitelisted_process_no_cumulative_alert(self):
         """Whitelisted processes don't accumulate a profile."""
         det = self._det(cumulative_score_threshold=5)
         buf = os.urandom(128)
         for i in range(20):
             time.sleep(0.02)
-            evt = make_event(1, 20005, "gcc", f"/home/user/build/obj_{i}.o", 128, buf)
+            evt = make_event(
+                1, 20005, "gpg", f"/home/user/secret_{i}.txt.gpg", 128, buf
+            )
             det.analyze_event(evt)
 
         slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
@@ -594,7 +717,7 @@ class TestUrandomDetection(unittest.TestCase):
     def test_whitelisted_process_urandom_no_alert(self):
         """Whitelisted processes reading urandom should not alert."""
         det = self._det()
-        evt = make_event(5, 30004, "gcc", "/dev/urandom", 0, b"")
+        evt = make_event(5, 30004, "gpg", "/dev/urandom", 0, b"")
         det.analyze_event(evt)
         self.assertEqual(len(det.alerts), 0)
 
@@ -636,17 +759,18 @@ class TestKillSignalDetection(unittest.TestCase):
 
     def test_multiple_kills_accumulate_score(self):
         det = self._det(cumulative_score_threshold=12)
-        # 3 kills × 4 points = 12 → should trigger cumulative alert
+        # 3 kills × 4 points = 12, but kill-only activity should not anchor a
+        # ransomware cumulative alert by itself.
         for target in ["clamd", "backup-agent", "mysqld"]:
             evt = make_event(6, 31003, "evil", target, 9, b"")
             det.analyze_event(evt)
         slow_alerts = [a for a in det.alerts if a["reason"] == "Slow-burn ransomware"]
-        self.assertGreater(len(slow_alerts), 0)
+        self.assertEqual(len(slow_alerts), 0)
 
     def test_whitelisted_process_kill_no_alert(self):
         """Whitelisted processes sending signals should not alert."""
         det = self._det()
-        evt = make_event(6, 31004, "systemd", "old-service", 15, b"")
+        evt = make_event(6, 31004, "logrotate", "old-service", 15, b"")
         det.analyze_event(evt)
         kill_alerts = [a for a in det.alerts if a["reason"] == "Kill signal sent"]
         self.assertEqual(len(kill_alerts), 0)
