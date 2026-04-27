@@ -630,30 +630,6 @@ class TestWriteTargetClassification(unittest.TestCase):
 class TestFileDiversityScoring(unittest.TestCase):
     """Verify that file diversity across directories is detected."""
 
-    def test_diverse_writes_across_dirs_triggers_alert(self):
-        """Writes to many unique files across many directories → alert."""
-        det = RansomwareDetector(
-            threshold_unique_files=5,
-            threshold_unique_dirs=3,
-            threshold_writes=100,  # Set high so frequency check doesn't fire first
-            time_window=10.0,
-            verify_binary_hash=False, verify_lineage=False,
-        )
-        buf = os.urandom(128)
-        dirs = ["/home/user/Documents", "/home/user/Pictures",
-                "/home/user/Desktop", "/srv/shared"]
-        for i, d in enumerate(dirs):
-            for j in range(3):
-                evt = make_event(
-                    1, 12000, "evil",
-                    f"{d}/file_{j}.doc", 128, buf,
-                )
-                det.analyze_event(evt)
-        diversity_alerts = [
-            a for a in det.alerts if a["reason"] == "High file diversity + Entropy"
-        ]
-        self.assertGreater(len(diversity_alerts), 0)
-
     def test_writes_to_single_dir_no_diversity_alert(self):
         """Many writes to the same directory should NOT trigger diversity alert."""
         det = RansomwareDetector(

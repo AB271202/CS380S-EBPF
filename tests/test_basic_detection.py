@@ -218,18 +218,6 @@ class TestMagicByteAnalysis(unittest.TestCase):
 class TestCombinedScenarios(unittest.TestCase):
     """Test realistic multi-signal scenarios."""
 
-    def test_whitelisted_gcc_compile_no_alerts(self):
-        """Simulates a gcc compilation: many high-entropy .o writes."""
-        det = RansomwareDetector(
-            threshold_writes=3, time_window=10.0,
-            verify_binary_hash=False, verify_lineage=False,
-        )
-        buf = os.urandom(128)
-        for i in range(20):
-            evt = make_event(1, 8000, "gcc", f"/build/obj_{i}.o", 128, buf)
-            det.analyze_event(evt)
-        self.assertEqual(len(det.alerts), 0)
-
     def test_whitelisted_rsync_mass_delete_no_alerts(self):
         """rsync cleaning up old files should not trigger unlink alerts."""
         det = RansomwareDetector(

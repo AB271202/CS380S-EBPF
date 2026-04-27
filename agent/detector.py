@@ -36,6 +36,9 @@ DEFAULT_WHITELISTED_PROCESSES = {
     # Package managers and dependency installers
     "apt", "apt-get", "dpkg", "dnf", "yum", "pacman", "snap", "flatpak",
     "pip", "pip3", "npm", "yarn",
+    # apt transport workers and helpers (child processes of apt/apt-get)
+    "http", "https", "gpgv", "store", "copy",
+    "apt-check", "apt-config",
     # Compression and encryption tools
     "gzip", "bzip2", "xz", "zstd", "lz4", "lzop",
     "pigz", "pbzip2", "pixz",
@@ -285,6 +288,9 @@ class RansomwareDetector:
             "cron", "anacron", "atd",
             "screen", "tmux",
             "docker", "containerd", "containerd-shim",
+            # Package manager parent processes (apt helpers, dpkg hooks)
+            "apt", "apt-get", "dpkg", "apt-key", "apt-config",
+            "cnf-update-db", "update-command-",
         }
         self._lineage_cache: Dict[int, bool] = {}
 
