@@ -75,8 +75,8 @@ exp-run-tuned-all:
 	    $(foreach s,$(SUITES),experiments/out/$(s)_tuned/results.csv)
 	sudo chown -R $$(id -u):$$(id -g) experiments/out/tuned_all
 	$(foreach s,$(SUITES), \
-	  @echo "\n=== $(s) ===" && $(call SHOW_METRICS,$(s)_tuned);)
-	@echo "\n=== Combined ===" && $(call SHOW_METRICS,tuned_all)
+	  echo "\n=== $(s) ===" && $(call SHOW_METRICS,$(s)_tuned);)
+	echo "\n=== Combined ===" && $(call SHOW_METRICS,tuned_all)
 
 exp-clean-tuned:
 	rm -rf $(foreach s,$(SUITES),experiments/out/$(s)_tuned) \
