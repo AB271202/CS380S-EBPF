@@ -35,8 +35,19 @@ struct filename_t {
     char s[256];
 };
 
+// Key for fd-to-filename mapping: combines pid and fd.
+struct pid_fd_t {
+    u32 pid;
+    u32 fd;
+};
+
 BPF_PERF_OUTPUT(events);
-BPF_HASH(fd_to_filename, u64, struct filename_t);
+
+// Maps fd (per-process) to the filename it was opened with.
+BPF_HASH(fd_to_filename, struct pid_fd_t, struct filename_t);
+
+// Temporary storage for open() entry: saves filename until kretprobe gets the fd.
+BPF_HASH(open_entry, u64, struct filename_t);
 
 // Use a per-CPU array as a scratch buffer to stay under the 512-byte stack limit
 BPF_PERCPU_ARRAY(event_heap, struct event_t, 1);
@@ -65,54 +76,56 @@ static __always_inline void populate_process_info(struct event_t *event) {
     bpf_probe_read_kernel(&event->ppid, sizeof(event->ppid), &parent->tgid);
 }
 
-static __always_inline int trace_open(struct pt_regs *ctx, const char *filename, int flags) {
-    struct event_t *event = get_event();
-    if (!event) return 0;
+// --- Open: entry saves filename, return associates it with the fd ---
 
-    __builtin_memset(event, 0, sizeof(*event));
+int kprobe__do_sys_openat2(struct pt_regs *ctx) {
+    const char *filename = (const char *)PT_REGS_PARM2(ctx);
 
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    populate_process_info(event);
-    event->type = EVENT_OPEN;
-    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    struct filename_t fname = {};
+    bpf_probe_read_user_str(&fname.s, sizeof(fname.s), filename);
 
-    bpf_probe_read_user_str(&event->filename, sizeof(event->filename), filename);
-
-    // Early filter: skip system/virtual paths that the detector ignores anyway.
-    // This reduces perf buffer pressure significantly on busy systems.
-    if (event->filename[0] == '/') {
-        char c1 = event->filename[1];
-        if (c1 == 'p' && event->filename[2] == 'r' && event->filename[3] == 'o' &&
-            event->filename[4] == 'c' && event->filename[5] == '/') {
+    // Early filter: skip system/virtual paths.
+    if (fname.s[0] == '/') {
+        char c1 = fname.s[1];
+        if (c1 == 'p' && fname.s[2] == 'r' && fname.s[3] == 'o' &&
+            fname.s[4] == 'c' && fname.s[5] == '/') {
             return 0;  // /proc/
         }
-        if (c1 == 's' && event->filename[2] == 'y' && event->filename[3] == 's' &&
-            event->filename[4] == '/') {
+        if (c1 == 's' && fname.s[2] == 'y' && fname.s[3] == 's' &&
+            fname.s[4] == '/') {
             return 0;  // /sys/
         }
-        if (c1 == 'r' && event->filename[2] == 'u' && event->filename[3] == 'n' &&
-            event->filename[4] == '/') {
+        if (c1 == 'r' && fname.s[2] == 'u' && fname.s[3] == 'n' &&
+            fname.s[4] == '/') {
             return 0;  // /run/
         }
     }
 
-    // Keep filename state for write correlation.
-    struct filename_t fname = {};
-    bpf_probe_read_kernel(&fname.s, sizeof(fname.s), event->filename);
-    fd_to_filename.update(&pid_tgid, &fname);
+    // Save filename for the kretprobe to pick up.
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    open_entry.update(&pid_tgid, &fname);
 
-    // Detect /dev/urandom or /dev/random access — emit as EVENT_URANDOM_READ.
-    // Compare the first 13 bytes: "/dev/urandom\0" or "/dev/random\0".
-    if (event->filename[0] == '/' && event->filename[1] == 'd' &&
-        event->filename[2] == 'e' && event->filename[3] == 'v' &&
-        event->filename[4] == '/') {
-        if ((event->filename[5] == 'u' && event->filename[6] == 'r' &&
-             event->filename[7] == 'a' && event->filename[8] == 'n' &&
-             event->filename[9] == 'd' && event->filename[10] == 'o' &&
-             event->filename[11] == 'm') ||
-            (event->filename[5] == 'r' && event->filename[6] == 'a' &&
-             event->filename[7] == 'n' && event->filename[8] == 'd' &&
-             event->filename[9] == 'o' && event->filename[10] == 'm')) {
+    // Emit OPEN event (and check for urandom).
+    struct event_t *event = get_event();
+    if (!event) return 0;
+
+    __builtin_memset(event, 0, sizeof(*event));
+    populate_process_info(event);
+    event->type = EVENT_OPEN;
+    bpf_get_current_comm(&event->comm, sizeof(event->comm));
+    bpf_probe_read_kernel(&event->filename, sizeof(event->filename), fname.s);
+
+    // Detect /dev/urandom or /dev/random access.
+    if (fname.s[0] == '/' && fname.s[1] == 'd' &&
+        fname.s[2] == 'e' && fname.s[3] == 'v' &&
+        fname.s[4] == '/') {
+        if ((fname.s[5] == 'u' && fname.s[6] == 'r' &&
+             fname.s[7] == 'a' && fname.s[8] == 'n' &&
+             fname.s[9] == 'd' && fname.s[10] == 'o' &&
+             fname.s[11] == 'm') ||
+            (fname.s[5] == 'r' && fname.s[6] == 'a' &&
+             fname.s[7] == 'n' && fname.s[8] == 'd' &&
+             fname.s[9] == 'o' && fname.s[10] == 'm')) {
             event->type = EVENT_URANDOM_READ;
             events.perf_submit(ctx, event, sizeof(*event));
             return 0;
@@ -123,22 +136,57 @@ static __always_inline int trace_open(struct pt_regs *ctx, const char *filename,
     return 0;
 }
 
-static __always_inline int trace_write(struct pt_regs *ctx, const char *buf, size_t count) {
+int kretprobe__do_sys_openat2(struct pt_regs *ctx) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    int fd = PT_REGS_RC(ctx);
+
+    // Negative return means open failed — no fd to track.
+    if (fd < 0) {
+        open_entry.delete(&pid_tgid);
+        return 0;
+    }
+
+    struct filename_t *fname = open_entry.lookup(&pid_tgid);
+    if (!fname) {
+        return 0;
+    }
+
+    // Associate this fd with the filename.
+    struct pid_fd_t key = {};
+    key.pid = pid_tgid >> 32;
+    key.fd = (u32)fd;
+    fd_to_filename.update(&key, fname);
+
+    open_entry.delete(&pid_tgid);
+    return 0;
+}
+
+// --- Write: look up filename by (pid, fd) ---
+
+int kprobe__ksys_write(struct pt_regs *ctx) {
+    unsigned int fd = (unsigned int)PT_REGS_PARM1(ctx);
+    const char *buf = (const char *)PT_REGS_PARM2(ctx);
+    size_t count = (size_t)PT_REGS_PARM3(ctx);
+
+    if (count < MIN_WRITE_SIZE) {
+        return 0;
+    }
+
     struct event_t *event = get_event();
     if (!event) return 0;
 
     __builtin_memset(event, 0, sizeof(*event));
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    if (count < MIN_WRITE_SIZE) {
-        return 0;
-    }
-
     populate_process_info(event);
     event->type = EVENT_WRITE;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 
-    struct filename_t *fname = fd_to_filename.lookup(&pid_tgid);
+    // Look up filename by (pid, fd).
+    struct pid_fd_t key = {};
+    key.pid = pid_tgid >> 32;
+    key.fd = fd;
+    struct filename_t *fname = fd_to_filename.lookup(&key);
     if (!fname) {
         return 0;
     }
@@ -172,6 +220,8 @@ static __always_inline int trace_write(struct pt_regs *ctx, const char *buf, siz
     return 0;
 }
 
+// --- Rename ---
+
 static __always_inline int trace_rename(struct pt_regs *ctx, const char *newname) {
     struct event_t *event = get_event();
     if (!event) return 0;
@@ -188,22 +238,12 @@ static __always_inline int trace_rename(struct pt_regs *ctx, const char *newname
     return 0;
 }
 
-// WSL's current BCC/kernel combination does not expose usable syscall
-// tracepoint arg structs, and kprobes on __x64_sys_* wrappers require an extra
-// pt_regs unwrap that the verifier rejects. Hook direct kernel helpers instead.
-int kprobe__do_sys_openat2(struct pt_regs *ctx) {
-    const char *filename = (const char *)PT_REGS_PARM2(ctx);
-    struct open_how_t *how_ptr = (struct open_how_t *)PT_REGS_PARM3(ctx);
-    struct open_how_t how = {};
-    bpf_probe_read_kernel(&how, sizeof(how), how_ptr);
-    return trace_open(ctx, filename, (int)how.flags);
+int kprobe__do_renameat2(struct pt_regs *ctx) {
+    const char *newname = (const char *)PT_REGS_PARM4(ctx);
+    return trace_rename(ctx, newname);
 }
 
-int kprobe__ksys_write(struct pt_regs *ctx) {
-    const char *buf = (const char *)PT_REGS_PARM2(ctx);
-    size_t count = (size_t)PT_REGS_PARM3(ctx);
-    return trace_write(ctx, buf, count);
-}
+// --- Unlink ---
 
 static __always_inline int trace_unlink(struct pt_regs *ctx, struct filename *name) {
     struct event_t *event = get_event();
@@ -226,7 +266,14 @@ static __always_inline int trace_unlink(struct pt_regs *ctx, struct filename *na
     return 0;
 }
 
-static __always_inline int trace_getdents(struct pt_regs *ctx) {
+int kprobe__do_unlinkat(struct pt_regs *ctx) {
+    struct filename *name = (struct filename *)PT_REGS_PARM2(ctx);
+    return trace_unlink(ctx, name);
+}
+
+// --- Getdents (directory listing) ---
+
+int kprobe__iterate_dir(struct pt_regs *ctx) {
     struct event_t *event = get_event();
     if (!event) return 0;
 
@@ -237,8 +284,12 @@ static __always_inline int trace_getdents(struct pt_regs *ctx) {
     event->type = EVENT_GETDENTS;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
 
-    // Correlate with the last opened filename for this thread.
-    struct filename_t *fname = fd_to_filename.lookup(&pid_tgid);
+    // For getdents, use the fd from the first argument (the directory fd).
+    unsigned int fd = (unsigned int)PT_REGS_PARM1(ctx);
+    struct pid_fd_t key = {};
+    key.pid = pid_tgid >> 32;
+    key.fd = fd;
+    struct filename_t *fname = fd_to_filename.lookup(&key);
     if (fname) {
         bpf_probe_read_kernel(&event->filename, sizeof(event->filename), fname->s);
     }
@@ -247,22 +298,8 @@ static __always_inline int trace_getdents(struct pt_regs *ctx) {
     return 0;
 }
 
-int kprobe__do_renameat2(struct pt_regs *ctx) {
-    const char *newname = (const char *)PT_REGS_PARM4(ctx);
-    return trace_rename(ctx, newname);
-}
+// --- Kill signal delivery ---
 
-int kprobe__do_unlinkat(struct pt_regs *ctx) {
-    struct filename *name = (struct filename *)PT_REGS_PARM2(ctx);
-    return trace_unlink(ctx, name);
-}
-
-int kprobe__iterate_dir(struct pt_regs *ctx) {
-    return trace_getdents(ctx);
-}
-
-// Hook kill/signal delivery to detect ransomware killing security processes.
-// do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p, ...)
 int kprobe__do_send_sig_info(struct pt_regs *ctx) {
     struct event_t *event = get_event();
     if (!event) return 0;
@@ -270,8 +307,7 @@ int kprobe__do_send_sig_info(struct pt_regs *ctx) {
     int sig = (int)PT_REGS_PARM1(ctx);
     struct task_struct *target = (struct task_struct *)PT_REGS_PARM3(ctx);
 
-    // Only track SIGKILL (9), SIGTERM (15), and SIGSTOP (19) — the signals
-    // ransomware uses to kill or suspend processes.
+    // Only track SIGKILL (9), SIGTERM (15), and SIGSTOP (19).
     if (sig != 9 && sig != 15 && sig != 19) {
         return 0;
     }
@@ -281,9 +317,8 @@ int kprobe__do_send_sig_info(struct pt_regs *ctx) {
     populate_process_info(event);
     event->type = EVENT_KILL;
     bpf_get_current_comm(&event->comm, sizeof(event->comm));
-    event->size = sig;  // Reuse size field for signal number
+    event->size = sig;
 
-    // Read the target process's comm into filename field.
     if (target) {
         bpf_probe_read_kernel_str(&event->filename, sizeof(event->filename),
                                   &target->comm);

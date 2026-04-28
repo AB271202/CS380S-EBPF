@@ -70,6 +70,7 @@ SYSTEM_PATH_PREFIXES = (
     "/proc/",       # Procfs — virtual, no user data
     "/sys/",        # Sysfs — virtual, no user data
     "/run/",        # Runtime state — ephemeral, recreated on boot
+    "/etc/",        # System configuration — not user documents
     "/tmp/.",       # Hidden temp files (e.g. .nfs locks)
 )
 
@@ -861,31 +862,67 @@ class RansomwareDetector:
         return False
 
     def _has_whitelisted_parent(self, pid):
-        """Return True if *pid* has a whitelisted process as a direct parent.
+        """Return True if *pid* is effectively a whitelisted tool.
 
-        This is a lightweight check used for generic launchers (python3, bash)
-        that should be suppressed when spawned by a trusted package manager
-        or tool, but should NOT be blanket-whitelisted themselves.
+        Checks: (1) the process's own cmdline for whitelisted tool names
+        (handles pip running as python3), (2) direct parent comm, (3)
+        grandparent comm.
         """
-        ppid = self._parent_pid_cache.get(pid)
-        if ppid is None:
-            ppid = self._get_ppid(pid)
+        cache = getattr(self, "_whitelisted_parent_cache", None)
+        if cache is None:
+            self._whitelisted_parent_cache = {}
+            cache = self._whitelisted_parent_cache
+        if pid in cache:
+            return cache[pid]
+
+        result = False
+        cmdline_readable = False
+
+        # Check if this process is actually a whitelisted tool by cmdline.
+        # Handles: /usr/bin/pip, python3 -m pip, python3 /usr/bin/pip, etc.
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().decode("utf-8", errors="replace")
+                cmdline_readable = True
+                parts = cmdline.split("\x00")[:6]
+                for part in parts:
+                    basename = os.path.basename(part)
+                    if basename in self.whitelisted_processes:
+                        result = True
+                        break
+                    # Also match common pip variants
+                    if basename in ("pip", "pip3", "pip3.8", "pip3.10", "pip3.11", "pip3.12"):
+                        result = True
+                        break
+        except OSError:
+            pass
+
+        if not result:
+            ppid = self._parent_pid_cache.get(pid)
+            if ppid is None:
+                ppid = self._get_ppid(pid)
+                if ppid is not None:
+                    self._parent_pid_cache[pid] = ppid
             if ppid is not None:
-                self._parent_pid_cache[pid] = ppid
-        if ppid is None:
-            return False
-        parent_comm = self._comm_cache.get(ppid) or self._get_comm(ppid)
-        if parent_comm and parent_comm in self.whitelisted_processes:
-            return True
-        # Also check grandparent (e.g. apt → python3 → python3 subprocess)
-        gppid = self._parent_pid_cache.get(ppid)
-        if gppid is None:
-            gppid = self._get_ppid(ppid)
-        if gppid is not None:
-            gp_comm = self._comm_cache.get(gppid) or self._get_comm(gppid)
-            if gp_comm and gp_comm in self.whitelisted_processes:
-                return True
-        return False
+                parent_comm = self._comm_cache.get(ppid) or self._get_comm(ppid)
+                if parent_comm and parent_comm in self.whitelisted_processes:
+                    result = True
+            # Also check grandparent
+            if not result and ppid is not None:
+                gppid = self._parent_pid_cache.get(ppid)
+                if gppid is None:
+                    gppid = self._get_ppid(ppid)
+                if gppid is not None:
+                    gp_comm = self._comm_cache.get(gppid) or self._get_comm(gppid)
+                    if gp_comm and gp_comm in self.whitelisted_processes:
+                        result = True
+
+        # Only cache if we got a definitive positive, or if we could
+        # actually read the cmdline.  If /proc was unreadable (process
+        # exited), don't cache False — retry on next event.
+        if result or cmdline_readable:
+            cache[pid] = result
+        return result
 
     # ------------------------------------------------------------------
     # Canary (honeypot) files
