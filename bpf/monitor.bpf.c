@@ -78,6 +78,24 @@ static __always_inline int trace_open(struct pt_regs *ctx, const char *filename,
 
     bpf_probe_read_user_str(&event->filename, sizeof(event->filename), filename);
 
+    // Early filter: skip system/virtual paths that the detector ignores anyway.
+    // This reduces perf buffer pressure significantly on busy systems.
+    if (event->filename[0] == '/') {
+        char c1 = event->filename[1];
+        if (c1 == 'p' && event->filename[2] == 'r' && event->filename[3] == 'o' &&
+            event->filename[4] == 'c' && event->filename[5] == '/') {
+            return 0;  // /proc/
+        }
+        if (c1 == 's' && event->filename[2] == 'y' && event->filename[3] == 's' &&
+            event->filename[4] == '/') {
+            return 0;  // /sys/
+        }
+        if (c1 == 'r' && event->filename[2] == 'u' && event->filename[3] == 'n' &&
+            event->filename[4] == '/') {
+            return 0;  // /run/
+        }
+    }
+
     // Keep filename state for write correlation.
     struct filename_t fname = {};
     bpf_probe_read_kernel(&fname.s, sizeof(fname.s), event->filename);
@@ -125,6 +143,27 @@ static __always_inline int trace_write(struct pt_regs *ctx, const char *buf, siz
         return 0;
     }
     bpf_probe_read_kernel(&event->filename, sizeof(event->filename), fname->s);
+
+    // Early filter: skip writes to system/virtual paths.
+    if (event->filename[0] == '/') {
+        char c1 = event->filename[1];
+        if (c1 == 'd' && event->filename[2] == 'e' && event->filename[3] == 'v' &&
+            event->filename[4] == '/') {
+            return 0;  // /dev/
+        }
+        if (c1 == 'p' && event->filename[2] == 'r' && event->filename[3] == 'o' &&
+            event->filename[4] == 'c' && event->filename[5] == '/') {
+            return 0;  // /proc/
+        }
+        if (c1 == 's' && event->filename[2] == 'y' && event->filename[3] == 's' &&
+            event->filename[4] == '/') {
+            return 0;  // /sys/
+        }
+        if (c1 == 'r' && event->filename[2] == 'u' && event->filename[3] == 'n' &&
+            event->filename[4] == '/') {
+            return 0;  // /run/
+        }
+    }
 
     event->size = count;
     bpf_probe_read_user(&event->buffer, sizeof(event->buffer), buf);

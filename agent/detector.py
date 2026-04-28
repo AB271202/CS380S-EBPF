@@ -860,6 +860,33 @@ class RansomwareDetector:
         self._lineage_cache[pid] = False
         return False
 
+    def _has_whitelisted_parent(self, pid):
+        """Return True if *pid* has a whitelisted process as a direct parent.
+
+        This is a lightweight check used for generic launchers (python3, bash)
+        that should be suppressed when spawned by a trusted package manager
+        or tool, but should NOT be blanket-whitelisted themselves.
+        """
+        ppid = self._parent_pid_cache.get(pid)
+        if ppid is None:
+            ppid = self._get_ppid(pid)
+            if ppid is not None:
+                self._parent_pid_cache[pid] = ppid
+        if ppid is None:
+            return False
+        parent_comm = self._comm_cache.get(ppid) or self._get_comm(ppid)
+        if parent_comm and parent_comm in self.whitelisted_processes:
+            return True
+        # Also check grandparent (e.g. apt → python3 → python3 subprocess)
+        gppid = self._parent_pid_cache.get(ppid)
+        if gppid is None:
+            gppid = self._get_ppid(ppid)
+        if gppid is not None:
+            gp_comm = self._comm_cache.get(gppid) or self._get_comm(gppid)
+            if gp_comm and gp_comm in self.whitelisted_processes:
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # Canary (honeypot) files
     # ------------------------------------------------------------------
@@ -1606,6 +1633,19 @@ class RansomwareDetector:
         # --- Whitelist check (false-positive reduction) ---
         # Canary access from whitelisted processes is still flagged.
         if self.is_whitelisted(comm, pid=pid) and not is_canary_access:
+            return
+
+        # --- Generic launcher with whitelisted parent (false-positive reduction) ---
+        # Language runtimes (python3, bash, etc.) are not blanket-whitelisted
+        # because malicious scripts can run under them.  However, when a
+        # generic launcher is a direct child of a whitelisted process (e.g.
+        # pip → python3), suppress it — the parent's trust extends to its
+        # runtime subprocess.
+        if (
+            comm in GENERIC_LAUNCHER_PROCESSES
+            and not is_canary_access
+            and self._has_whitelisted_parent(pid)
+        ):
             return
 
         # --- Canary file access (high-priority) ---

@@ -170,17 +170,21 @@ def main():
         f"perf pages={page_cnt}). Press Ctrl+C to stop."
     )
 
+    running = True
+
     def signal_handler(sig, frame):
-        print("\nStopping monitor...")
-        sys.exit(0)
+        nonlocal running
+        running = False
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    while True:
+    while running:
         try:
             b.perf_buffer_poll()
         except KeyboardInterrupt:
             break
+
+    print("\nStopping monitor...")
 
 if __name__ == "__main__":
     main()

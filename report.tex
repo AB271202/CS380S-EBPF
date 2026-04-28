@@ -385,7 +385,7 @@ Modern Endpoint Detection and Response (EDR) platforms such as CrowdStrike Falco
 \begin{enumerate}
     \item \textit{Process Kill.} The process tree is terminated by first signaling all child PIDs (discovered via \texttt{/proc/<pid>/task/<pid>/children}) and then the main PID. In \texttt{suspend} mode, \texttt{SIGSTOP} is used instead of \texttt{SIGKILL}, freezing the process for administrator review while preserving its memory state for forensic analysis.
 
-    \item \textit{Quarantine.} Since step~1 has already killed the process, the binary is no longer memory-mapped and can be safely \emph{moved} (not copied) from its original location to a quarantine directory (\texttt{/var/lib/ransomware-monitor/quarantine/} by default). All permission bits are stripped from the quarantined copy (\texttt{chmod 000}), and the original path is added to a persistent blocklist. Because the original is removed from disk, no separate binary-hardening step is needed.
+    \item \textit{Quarantine.} Since step~1 has already killed the process, the binary is no longer memory-mapped and can be safely \emph{moved} from its original location to a quarantine directory (\texttt{/var/lib/ransomware-monitor/quarantine/} by default). All permission bits are stripped from the quarantined copy (\texttt{chmod 000}), and the original path is added to a persistent blocklist. 
 
     \item \textit{Network Isolation.} The process's real UID is read from \texttt{/proc/<pid>/status}, and an iptables \texttt{OUTPUT} rule is installed using the \texttt{owner} match module to drop all outbound traffic from that UID. This prevents data exfiltration and C2 communication from any other processes running under the same user, which is important because ransomware often exfiltrates data before encrypting it as part of a double-extortion strategy. This step is opt-in via \texttt{--enable-network-isolation}.
 
@@ -502,7 +502,12 @@ Tables~\ref{tab:ransomware_tuned_overall} and~\ref{tab:evalransom_updated_2} sum
 \paragraph{Discussion.}
 The tuned results now show a detector operating at a much cleaner policy boundary. The overall specificity is $1.000$: the benign stress suite is fully quiet, and no false positives remain in the combined run. The cost is explicit in recall. Under the current trust policy, the Atomic Red Team T1486 suite becomes an all-miss boundary because those scenarios are single trusted-tool invocations on one file rather than multi-file ransomware workflows. The quality of the behavioral detection remains the strongest result: the behavioral suite contributes 24/24 true positives across both the original ransomware-inspired workloads and the higher-fidelity in-place overwrite variants. This means the detector continues to fire when the workload removes cosmetic signals such as suspicious extensions, renamed outputs, and ransom-note-like artifacts, as long as the process still exhibits the invariant file-system behavior of ransomware.
 
-\paragraph{Half-day run.} \todo{Add results of half day run.}
+\paragraph{Extended Live Monitoring.}
+To validate the detector beyond scripted workloads, we ran the monitor continuously on a development workstation (WSL2, Ubuntu 20.04) during a normal working session spanning several hours. The session included reading and downloading academic papers, editing documents in Overleaf, browsing the web, running compilation tasks, and various background processes. During ordinary usage, the monitor produced zero false positives.
+
+However, running \texttt{sudo apt update} triggered a burst of alerts from three sources: (1)~the \texttt{http} transport worker (a child of \texttt{apt} located at \texttt{/usr/lib/apt/methods/http}) downloading \texttt{.xz}-compressed package lists at high frequency with entropy $\sim$6.55, (2)~the \texttt{apt-check} helper performing rapid file deletions during cleanup, and (3)~\texttt{dpkg} having its whitelist revoked because its process lineage passed through apt helper processes (\texttt{cnf-update-db}, \texttt{apt-key}) that were not in the trusted-parent set.
+
+These findings motivated two categories of fixes. First, we expanded the whitelist and trusted-parent set to cover apt's transport workers (\texttt{http}, \texttt{https}, \texttt{gpgv}), helpers (\texttt{apt-check}, \texttt{apt-config}, \texttt{apt-esm-json-hook}), and parent processes (\texttt{apt-key}, \texttt{cnf-update-db}) so that the lineage verification correctly identifies these as legitimate. Second, and more importantly, we identified that the unlink-frequency and kill-signal heuristics were not gated by an entropy anchor. A process performing mass deletions without any high-entropy writes (e.g., package manager cleanup, \texttt{pip} uninstalling old \texttt{.pyc} files, or a user killing processes via \texttt{htop}) is not exhibiting ransomware behavior. We added an entropy-anchor requirement to both heuristics: the unlink-frequency and kill-signal alerts now fire only if the same process has performed at least one high-entropy write within the sliding time window. This change eliminates an entire class of false positives from system administration tools without reducing detection of actual ransomware, which by definition must write encrypted data before or alongside its destructive operations.
 
 \subsection{Network Filtering Setup and Results}
 \paragraph{Experimental Setup.}
@@ -558,6 +563,14 @@ Our behavioral heuristics are effective against ransomware that exhibits bulk en
 
 The process whitelist, while hardened with binary hash and lineage checks, relies on \texttt{/proc} availability and cannot protect against attacks that compromise the kernel itself. The BCC-based architecture compiles the eBPF program at runtime, introducing startup latency and a dependency on kernel headers; migrating to CO-RE with \texttt{libbpf} would address this but requires a significant rewrite.
 
+Directions for future work include:
+\begin{itemize}
+    \item \textit{Performance overhead characterization.} Measuring the CPU, memory, and I/O latency overhead of the monitor under sustained workloads (e.g., large compilations, database transactions, media encoding) would quantify the cost of always-on protection and identify whether the current kprobe-based instrumentation introduces measurable slowdowns on I/O-heavy systems.
+    \item \textit{Cross-PID correlation.} An attacker that forks a new process for each file encryption would evade per-PID cumulative profiling. Correlating behavior across process groups or sessions (e.g., via cgroup or session ID) could close this gap.
+    \item \textit{ML-augmented classification.} Integrating lightweight ML models (e.g., decision trees trained on syscall sequences) could improve recall on ambiguous single-file cases without sacrificing the low false-positive rate achieved by the current rule-based approach.
+    \item \textit{CO-RE migration.} Porting the eBPF program to CO-RE with \texttt{libbpf} would eliminate the runtime compilation dependency on kernel headers, reduce startup latency, and improve portability across kernel versions.
+\end{itemize}
+
 \paragraph{Network Filtering.}
 \todo{}
 % The current XDP-based filter operates on per-source-IP packet rates, which can be evaded by distributed attacks using many low-rate sources. UDP traffic with spoofed source IPs could trick the system into blocking legitimate services. The iptables-based persistent blocking uses permanent rules; a timed expiry mechanism would be more appropriate to avoid permanently blocking IPs that were only temporarily compromised.
@@ -576,7 +589,7 @@ The code for this part can be found \href{https://github.com/AB271202/CS380S-EBP
 
 
 \subsection{Network Filtering}
-The code for this part can be found \todo{here}.
+The code for this part can be found \href{https://github.com/davidbockelman/cs380-network-filters}{here}.
 \begin{itemize}
     \item{David conducted the experiments with the Raspberry Pi, researched and set up the XDP-based tagging for spoofing mitigation and the TCP SYN flood attacks with cookies.}
     \item{Danny researched and set up the XDP-Based Packet Filtering code and researched about the XDP-based tagging for spoofing mitigation.}
