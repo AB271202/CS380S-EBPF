@@ -742,6 +742,11 @@ class TestKillSignalDetection(unittest.TestCase):
 
     def test_kill_signal_triggers_alert(self):
         det = self._det()
+        # Kill signal alert now requires at least one recent high-entropy
+        # write as an entropy anchor.
+        buf = os.urandom(128)
+        evt = make_event(1, 31001, "evil", "/home/user/target.doc", 128, buf)
+        det.analyze_event(evt)
         evt = make_event(6, 31001, "evil", "backup-agent", 15, b"")
         det.analyze_event(evt)
         kill_alerts = [a for a in det.alerts if a["reason"] == "Kill signal sent"]

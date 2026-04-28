@@ -114,6 +114,11 @@ class TestUnlinkDetection(unittest.TestCase):
             threshold_unlinks=3, time_window=10.0,
             verify_binary_hash=False, verify_lineage=False,
         )
+        # Unlink frequency alert now requires at least one recent
+        # high-entropy write as an entropy anchor.
+        buf = os.urandom(128)
+        evt = make_event(1, 7000, "evil", "/home/user/target.doc", 128, buf)
+        det.analyze_event(evt)
         for i in range(5):
             evt = make_event(3, 7000, "evil", f"/tmp/f{i}.txt", 0, b"")
             det.analyze_event(evt)

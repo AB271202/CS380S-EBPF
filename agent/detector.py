@@ -38,7 +38,7 @@ DEFAULT_WHITELISTED_PROCESSES = {
     "pip", "pip3", "npm", "yarn",
     # apt transport workers and helpers (child processes of apt/apt-get)
     "http", "https", "gpgv", "store", "copy",
-    "apt-check", "apt-config",
+    "apt-check", "apt-config", "apt-esm-json-ho",
     # Compression and encryption tools
     "gzip", "bzip2", "xz", "zstd", "lz4", "lzop",
     "pigz", "pbzip2", "pixz",
@@ -291,6 +291,8 @@ class RansomwareDetector:
             # Package manager parent processes (apt helpers, dpkg hooks)
             "apt", "apt-get", "dpkg", "apt-key", "apt-config",
             "cnf-update-db", "update-command-",
+            # pip spawns child pip/python3 processes during install
+            "pip", "pip3",
         }
         self._lineage_cache: Dict[int, bool] = {}
 
@@ -1738,22 +1740,31 @@ class RansomwareDetector:
             self._check_cumulative_alert(pid, comm)
 
             if len(self.unlink_stats[pid]) >= self.threshold_unlinks:
-                print(
-                    f"[!!!] ALERT: Potential ransomware behavior "
-                    f"from {comm} (PID {pid})"
-                )
-                print(
-                    f"      High unlink frequency "
-                    f"({len(self.unlink_stats[pid])} in "
-                    f"{self.time_window}s)"
-                )
-                self._record_alert(
-                    pid,
-                    comm,
-                    "High unlink frequency",
-                    **self._get_traversal_context(pid, now),
-                )
-                self.take_action(pid, comm, "High unlink frequency")
+                # Only alert if the process has also performed recent
+                # high-entropy writes — pure deletion without encryption
+                # evidence is not ransomware-indicative (e.g. package
+                # managers, pip cleanup, logrotate).
+                recent_he_writes = [
+                    e for e in self.process_stats.get(pid, [])
+                    if e[1] > self.threshold_entropy and now - e[0] <= self.time_window
+                ]
+                if len(recent_he_writes) >= 1:
+                    print(
+                        f"[!!!] ALERT: Potential ransomware behavior "
+                        f"from {comm} (PID {pid})"
+                    )
+                    print(
+                        f"      High unlink frequency "
+                        f"({len(self.unlink_stats[pid])} in "
+                        f"{self.time_window}s)"
+                    )
+                    self._record_alert(
+                        pid,
+                        comm,
+                        "High unlink frequency",
+                        **self._get_traversal_context(pid, now),
+                    )
+                    self.take_action(pid, comm, "High unlink frequency")
 
         elif event.type == 4:  # GETDENTS (directory listing)
             directory = os.path.dirname(filename) if filename else filename
@@ -1804,19 +1815,25 @@ class RansomwareDetector:
             self._update_profile_kill(pid, target_comm, sig)
             self._check_cumulative_alert(pid, comm)
 
-            # Immediate alert on kill signals — ransomware killing
-            # security/backup processes is a critical indicator.
-            print(
-                f"[!!!] ALERT: Process {comm} (PID {pid}) sent "
-                f"signal {sig} to '{target_comm}'"
-            )
-            self._record_alert(
-                pid, comm, "Kill signal sent",
-                severity="high",
-                target_comm=target_comm,
-                signal=sig,
-            )
-            self.take_action(pid, comm, "Kill signal sent")
+            # Immediate alert only if the process has recent high-entropy
+            # writes — without encryption evidence, kill signals alone are
+            # benign (task managers, systemd restarts, user pkill, etc.).
+            recent_he_writes = [
+                e for e in self.process_stats.get(pid, [])
+                if e[1] > self.threshold_entropy and now - e[0] <= self.time_window
+            ]
+            if len(recent_he_writes) >= 1:
+                print(
+                    f"[!!!] ALERT: Process {comm} (PID {pid}) sent "
+                    f"signal {sig} to '{target_comm}'"
+                )
+                self._record_alert(
+                    pid, comm, "Kill signal sent",
+                    severity="high",
+                    target_comm=target_comm,
+                    signal=sig,
+                )
+                self.take_action(pid, comm, "Kill signal sent")
 
     # ------------------------------------------------------------------
     # Mitigation (delegates to Mitigator)

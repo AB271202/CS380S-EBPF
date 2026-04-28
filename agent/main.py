@@ -148,7 +148,13 @@ def main():
 
     lost_totals = {"count": 0}
 
-    def on_lost_event(cpu, count):
+    def on_lost_event(lost, count=None):
+        # BCC API varies by version: older passes (count), newer passes (cpu, count).
+        if count is None:
+            count = lost
+            cpu = "?"
+        else:
+            cpu = lost
         lost_totals["count"] += count
         print(
             f"[WARN] Lost {count} events on CPU {cpu} "

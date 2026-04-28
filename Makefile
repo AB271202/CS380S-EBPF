@@ -20,10 +20,10 @@ $(word 2,$(subst :, ,$1))
 endef
 
 # --- Core targets ---
-run:
+run: mount
 	sudo python3 agent/main.py
 
-run-verbose:
+run-verbose: mount
 	sudo python3 agent/main.py --verbose
 
 mount:
